@@ -23,6 +23,8 @@ export interface Config {
   profile: string | undefined;
   /** Keychain account name the token is stored under. */
   keychainAccount: string;
+  /** SQLite file of the local mirror (see `starling-mcp sync`). */
+  dbPath: string;
   requestsPerSecond: number;
   defaultAccountUid: string | undefined;
 }
@@ -115,6 +117,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? undefined
       : resolve(expandHome(download || join(homedir(), "Downloads", "starling-mcp", profile ?? "default")));
 
+  const dbPath = resolve(
+    expandHome(
+      env.STARLING_DB_PATH?.trim() ||
+        join(
+          homedir(),
+          ".local",
+          "share",
+          "starling-mcp",
+          `${profile ?? "default"}${environment === "sandbox" ? "-sandbox" : ""}.sqlite`,
+        ),
+    ),
+  );
+
   return {
     environment,
     baseUrl: BASE_URLS[environment],
@@ -127,6 +142,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     downloadDir,
     profile,
     keychainAccount,
+    dbPath,
     requestsPerSecond,
     defaultAccountUid: env.STARLING_DEFAULT_ACCOUNT_UID?.trim() || undefined,
   };

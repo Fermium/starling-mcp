@@ -4,6 +4,7 @@ import { cardTools } from "./cards.js";
 import { directDebitTools } from "./directDebits.js";
 import { feedTools } from "./feed.js";
 import { insightTools } from "./insights.js";
+import { mirrorTools } from "./mirror.js";
 import { payeeTools } from "./payees.js";
 import { paymentTools } from "./payments.js";
 import { spaceTools } from "./spaces.js";
@@ -13,6 +14,7 @@ import type { ToolDef } from "./types.js";
 export const ALL_TOOLS: ToolDef<any>[] = [
   ...accountTools,
   ...insightTools,
+  ...mirrorTools,
   ...feedTools,
   ...spaceTools,
   ...cardTools,

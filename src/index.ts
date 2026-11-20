@@ -2,11 +2,15 @@
 import { createHash, createPrivateKey, createPublicKey, createSign, generateKeyPairSync } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StarlingApiError, StarlingClient } from "./client.js";
 import { type AccessTier, CONFIG_DIR, type Config, loadConfig, tierAllows } from "./config.js";
 import { assertPrivateFile, deleteToken, loadAccessToken, readHidden, renameToken, storeToken } from "./credentials.js";
+import { backupMirror } from "./mirror/backup.js";
+import { openMirrorReadOnly } from "./mirror/db.js";
+import { sync } from "./mirror/sync.js";
 import { OPERATIONS } from "./operations.js";
 import { createServer, registeredToolCount, toolEnabled, VERSION } from "./server.js";
 import { loadSigner, type RequestSigner } from "./signing.js";
@@ -166,7 +170,86 @@ async function doctor(): Promise<void> {
       ? `\nTools the token's scopes do not cover (${blocked.length}):\n${blocked.join("\n")}`
       : "\nAll enabled tools are covered by the token's scopes.",
   );
+  console.log(`\n${mirrorSummary(config).join("\n")}`);
   console.log(`\nAPI requests used by this check: ${client.requestsToday}`);
+}
+
+function mirrorSummary(config: Config): string[] {
+  const db = openMirrorReadOnly(config.dbPath);
+  if (!db)
+    return [
+      `Local mirror:  none yet at ${config.dbPath} (create it with: starling-mcp sync${config.profile ? ` --profile ${config.profile}` : ""})`,
+    ];
+  try {
+    const rows = db
+      .prepare("SELECT COUNT(*) AS n, MIN(transaction_time) AS a, MAX(transaction_time) AS b FROM feed_items")
+      .get() as { n: number; a: string | null; b: string | null };
+    const last = db
+      .prepare(
+        "SELECT finished_at, outcome, api_calls, message FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1",
+      )
+      .get() as { finished_at: string; outcome: string; api_calls: number; message: string | null } | undefined;
+    const pending = (
+      db.prepare("SELECT COUNT(*) AS n FROM sync_state WHERE backfill_complete = 0").get() as { n: number }
+    ).n;
+    const cats = (db.prepare("SELECT COUNT(*) AS n FROM sync_state").get() as { n: number }).n;
+    return [
+      `Local mirror:  ${config.dbPath}`,
+      `               ${rows.n} transactions, ${rows.a?.slice(0, 10) ?? "-"} to ${rows.b?.slice(0, 10) ?? "-"}; ${cats} categories, ${pending ? `${pending} still backfilling` : "history complete"}`,
+      `               last sync ${last ? `${last.finished_at} (${last.outcome}, ${last.api_calls} calls)` : "never"}${last?.message ? `: ${last.message}` : ""}`,
+    ];
+  } finally {
+    db.close();
+  }
+}
+
+async function runSyncCommand(args: string[]): Promise<void> {
+  const config = loadConfig();
+  const profile = config.profile ?? "default";
+  const number = (name: string) => {
+    const v = optionValue(args, name);
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer`);
+    return n;
+  };
+  const backupDir = optionValue(args, "--backup-dir");
+  const { client } = await makeClient(config);
+  const verbose = args.includes("--verbose");
+  const summary = await sync(client, config.dbPath, {
+    profile,
+    full: args.includes("--full"),
+    dryRun: args.includes("--dry-run"),
+    maxRequests: number("--max-requests"),
+    dailyLimit: number("--daily-limit"),
+    log: verbose ? (line) => console.log(line) : undefined,
+  });
+  if (summary.outcome === "dry-run") {
+    console.log(
+      `${profile}: dry run. About ${summary.plannedCalls} API calls needed (${summary.apiCalls} used to plan), ` +
+        `${summary.categories || "?"} categories known, ${summary.callsUsedToday} mirror calls used today.`,
+    );
+    return;
+  }
+  console.log(
+    `${profile}: ${summary.outcome}. ${summary.newItems} new, ${summary.updatedItems} updated, ${summary.totalItems} total transactions ` +
+      `(${summary.earliest?.slice(0, 10) ?? "-"} to ${summary.latest?.slice(0, 10) ?? "-"}), ${summary.categories} categories` +
+      `${summary.backfillPending ? `, ${summary.backfillPending} still backfilling` : ""}. ` +
+      `${summary.apiCalls} API calls (${summary.callsUsedToday} by the mirror today).`,
+  );
+  if (summary.message) console.log(summary.message);
+  if (summary.outcome !== "complete") {
+    process.exitCode = 75; // EX_TEMPFAIL: incomplete but resumable
+    return;
+  }
+  if (backupDir) {
+    const { path, removed } = backupMirror(config.dbPath, expandPath(backupDir), profile);
+    console.log(`Backup written to ${path}${removed.length ? ` (removed ${removed.length} old copies)` : ""}.`);
+  }
+}
+
+function expandPath(p: string): string {
+  return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
 }
 
 async function generateKeys(force: boolean): Promise<void> {
@@ -225,6 +308,9 @@ Usage:
                                        (e.g. --from personal --to business). "token copy" keeps the original.
   starling-mcp doctor [--profile <name>]
                                        Check configuration, token scopes and account access
+  starling-mcp sync [--profile <name>] [--full] [--dry-run] [--backup-dir <dir>] [--max-requests N] [--verbose]
+                                       Update the local SQLite mirror (read-only API calls). First run backfills all history;
+                                       later runs are incremental. Exit code 75 = stopped early (budget), run again to resume.
   starling-mcp scopes                  List the token scopes each access tier needs
   starling-mcp keys generate [--force] Create request-signing key pairs in ${KEY_DIR}
   starling-mcp keys rotation-signature <new-public-key.pem> <rotation-key-uid>
@@ -311,6 +397,8 @@ async function main(args: string[]): Promise<void> {
       break;
     case "doctor":
       return doctor();
+    case "sync":
+      return runSyncCommand([sub, ...rest].filter((x): x is string => x !== undefined));
     case "scopes":
       return printScopes();
     case "keys":

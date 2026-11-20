@@ -54,6 +54,72 @@ function normaliseName(item: FeedItem): string {
   return (item.counterPartyName ?? item.reference ?? "Unknown").trim().replace(/\s+/g, " ").toUpperCase();
 }
 
+export interface SummariseOptions {
+  groupBy?: "spendingCategory" | "counterParty" | "month";
+  direction?: "IN" | "OUT";
+  includeInternalTransfers?: boolean;
+  top?: number;
+}
+
+/** Totals settled + pending items by spending category, counterparty or month (pure; no API calls). */
+export function summariseItems(items: FeedItem[], args: SummariseOptions, currency: string) {
+  const r = { currency };
+  const groupBy = args.groupBy ?? "spendingCategory";
+  const base = filterFeed(items, {
+    statuses: COUNTED_STATUSES,
+    includeInternalTransfers: args.includeInternalTransfers ?? false,
+  });
+
+  if (groupBy === "month") {
+    const months = new Map<string, { in: number; out: number; count: number; currency: string }>();
+    for (const i of base) {
+      const key = `${i.transactionTime.slice(0, 7)}${i.amount.currency !== r.currency ? ` ${i.amount.currency}` : ""}`;
+      const m = months.get(key) ?? { in: 0, out: 0, count: 0, currency: i.amount.currency };
+      if (i.direction === "IN") m.in += i.amount.minorUnits;
+      else m.out += i.amount.minorUnits;
+      m.count++;
+      months.set(key, m);
+    }
+    return {
+      months: [...months.entries()].sort().map(([month, m]) => ({
+        month,
+        moneyIn: formatMoney(m.in, m.currency),
+        moneyOut: formatMoney(m.out, m.currency),
+        net: formatMoney(m.in - m.out, m.currency),
+        transactions: m.count,
+      })),
+    };
+  }
+
+  const direction = args.direction ?? "OUT";
+  const matched = base.filter((i) => i.direction === direction);
+  const groups = new Map<string, { minor: number; count: number; currency: string }>();
+  for (const i of matched) {
+    const label = groupBy === "counterParty" ? (i.counterPartyName ?? "Unknown") : (i.spendingCategory ?? "NONE");
+    const key = i.amount.currency !== r.currency ? `${label} (${i.amount.currency})` : label;
+    const g = groups.get(key) ?? { minor: 0, count: 0, currency: i.amount.currency };
+    g.minor += i.amount.minorUnits;
+    g.count++;
+    groups.set(key, g);
+  }
+  const total = matched.filter((i) => i.amount.currency === r.currency).reduce((s, i) => s + i.amount.minorUnits, 0);
+  const sorted = [...groups.entries()].sort((a, b) => b[1].minor - a[1].minor);
+  return {
+    direction,
+    groupBy,
+    total: formatMoney(total, r.currency),
+    transactions: matched.length,
+    groups: sorted.slice(0, args.top ?? 30).map(([key, g]) => ({
+      [groupBy]: key,
+      total: formatMoney(g.minor, g.currency),
+      minorUnits: g.minor,
+      transactions: g.count,
+      shareOfTotal: g.currency === r.currency && total ? `${((g.minor / total) * 100).toFixed(1)}%` : undefined,
+    })),
+    otherGroups: Math.max(0, sorted.length - (args.top ?? 30)),
+  };
+}
+
 export interface RecurringPayment {
   counterParty: string;
   cadence: string;
@@ -226,66 +292,7 @@ export const insightTools = [
       const from = toTimestamp(args.from ?? startOfMonth());
       const to = toTimestamp(args.to ?? new Date().toISOString(), true);
       const { items } = await fetchFeedBetween(ctx.client, r.accountUid, r.categoryUid, from, to);
-      const groupBy = args.groupBy ?? "spendingCategory";
-      const base = filterFeed(items, {
-        statuses: COUNTED_STATUSES,
-        includeInternalTransfers: args.includeInternalTransfers ?? false,
-      });
-
-      if (groupBy === "month") {
-        const months = new Map<string, { in: number; out: number; count: number; currency: string }>();
-        for (const i of base) {
-          const key = `${i.transactionTime.slice(0, 7)}${i.amount.currency !== r.currency ? ` ${i.amount.currency}` : ""}`;
-          const m = months.get(key) ?? { in: 0, out: 0, count: 0, currency: i.amount.currency };
-          if (i.direction === "IN") m.in += i.amount.minorUnits;
-          else m.out += i.amount.minorUnits;
-          m.count++;
-          months.set(key, m);
-        }
-        return json({
-          from,
-          to,
-          months: [...months.entries()].sort().map(([month, m]) => ({
-            month,
-            moneyIn: formatMoney(m.in, m.currency),
-            moneyOut: formatMoney(m.out, m.currency),
-            net: formatMoney(m.in - m.out, m.currency),
-            transactions: m.count,
-          })),
-        });
-      }
-
-      const direction = args.direction ?? "OUT";
-      const matched = base.filter((i) => i.direction === direction);
-      const groups = new Map<string, { minor: number; count: number; currency: string }>();
-      for (const i of matched) {
-        const label = groupBy === "counterParty" ? (i.counterPartyName ?? "Unknown") : (i.spendingCategory ?? "NONE");
-        const key = i.amount.currency !== r.currency ? `${label} (${i.amount.currency})` : label;
-        const g = groups.get(key) ?? { minor: 0, count: 0, currency: i.amount.currency };
-        g.minor += i.amount.minorUnits;
-        g.count++;
-        groups.set(key, g);
-      }
-      const total = matched
-        .filter((i) => i.amount.currency === r.currency)
-        .reduce((s, i) => s + i.amount.minorUnits, 0);
-      const sorted = [...groups.entries()].sort((a, b) => b[1].minor - a[1].minor);
-      return json({
-        from,
-        to,
-        direction,
-        groupBy,
-        total: formatMoney(total, r.currency),
-        transactions: matched.length,
-        groups: sorted.slice(0, args.top ?? 30).map(([key, g]) => ({
-          [groupBy]: key,
-          total: formatMoney(g.minor, g.currency),
-          minorUnits: g.minor,
-          transactions: g.count,
-          shareOfTotal: g.currency === r.currency && total ? `${((g.minor / total) * 100).toFixed(1)}%` : undefined,
-        })),
-        otherGroups: Math.max(0, sorted.length - (args.top ?? 30)),
-      });
+      return json({ from, to, ...summariseItems(items, args, r.currency) });
     },
   }),
 
