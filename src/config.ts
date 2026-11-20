@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { loadPayPalConfig, type PayPalConfig } from "./paypal/config.js";
 
 export type Environment = "production" | "sandbox";
 
@@ -25,6 +26,8 @@ export interface Config {
   keychainAccount: string;
   /** SQLite file of the local mirror (see `starling-mcp sync`). */
   dbPath: string;
+  /** PayPal mirror whose read-only tools this server exposes (PAYPAL_PROFILE set), else undefined. */
+  paypal: PayPalConfig | undefined;
   requestsPerSecond: number;
   defaultAccountUid: string | undefined;
 }
@@ -143,6 +146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     profile,
     keychainAccount,
     dbPath,
+    paypal: env.PAYPAL_PROFILE?.trim() ? loadPayPalConfig(env) : undefined,
     requestsPerSecond,
     defaultAccountUid: env.STARLING_DEFAULT_ACCOUNT_UID?.trim() || undefined,
   };

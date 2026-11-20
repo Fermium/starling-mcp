@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- **Read-only PayPal business mirror.**
+  - `starling-mcp paypal sync --profile <p> [--full] [--backup-dir d] [--max-requests N] [--overlap-days N]` mirrors PayPal's Transaction Search API into its own SQLite file: 31-day windows with every page, back three years, then incremental with a 14-day overlap. Upserts are idempotent, balance snapshots are kept, 429s back off, stops are resumable (exit code 75), and backups rotate like the Starling mirror's.
+  - OAuth2 client credentials read from the Keychain (service `fermium-<profile>`, accounts `client_id` / `client_secret`), or stored with `starling-mcp paypal token set` (hidden input, checked with PayPal first).
+  - New tools, registered only when `PAYPAL_PROFILE` is set: `paypal_query_transactions`, `paypal_mirror_status` and `paypal_match_starling` (PayPal deposits, withdrawals and payments lined up with Starling business feed items by amount and date ±5 days, using currency-conversion legs where present). Nothing can create, refund, invoice or pay.
 - **Local mirror.** `starling-mcp sync --profile <p> [--full] [--dry-run] [--backup-dir <dir>] [--max-requests N] [--daily-limit N]` keeps a complete SQLite copy (`~/.local/share/starling-mcp/<profile>.sqlite`, or `STARLING_DB_PATH`) of every account, space and savings goal: the account holder, accounts, categories, all feed items with their raw JSON and an FTS5 index, balance snapshots, mandates, standing orders and payees.
   - The first run backfills in one-year windows down to each account's creation date. Later runs are incremental via `changesSince`, with a 7-day overlap, and upserts are idempotent.
   - API budgets: 600 calls per run and 900 per day by default. A run stops cleanly with exit code 75 and resumes on the next run; a 429 is treated the same way.

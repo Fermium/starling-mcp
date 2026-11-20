@@ -213,7 +213,7 @@ export function upsertFeedItems(
 }
 
 /** A lock file next to the DB, so a scheduled and a manual sync of one profile never run at once. */
-function acquireLock(dbPath: string): () => void {
+export function acquireLock(dbPath: string): () => void {
   const lock = `${dbPath}.lock`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

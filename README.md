@@ -193,6 +193,7 @@ starling-mcp sync --profile personal --backup-dir "$HOME/Library/CloudStorage/Go
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>NODE</key><string>/opt/homebrew/bin/node</string>
+    <key>PAYPAL_PROFILES</key><string>paypal-business</string>
     <key>STARLING_BACKUP_DIR</key><string>/Users/you/Library/CloudStorage/GoogleDrive-you@example.com/My Drive/Finance/Starling/mirror-backups</string>
   </dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
@@ -207,6 +208,44 @@ plutil -lint ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
 launchctl kickstart gui/$(id -u)/com.example.starling-mcp.sync   # run it now once
 ```
+
+## PayPal business mirror (read-only)
+
+A read-only mirror of a PayPal business account, kept next to the Starling mirror. It lets the assistant answer "what was this PayPal debit?" without API calls. It uses PayPal's Transaction Search API only: there are no tools that create, refund, invoice or pay.
+
+1. **Create the app.** On [developer.paypal.com](https://developer.paypal.com), under *Apps & Credentials → Live*, create a REST app. Tick only **Transaction search** (balances come with it). Leave every other feature off.
+2. **Store the credentials** in the macOS Keychain, under service `fermium-<profile>` (or `PAYPAL_KEYCHAIN_SERVICE`) with accounts `client_id` and `client_secret`. Either use the helper, which hides your input and checks the credentials with PayPal before saving:
+   ```sh
+   starling-mcp paypal token set --profile paypal-business
+   ```
+   or add them yourself with `security add-generic-password -s fermium-paypal-business -a client_id -w` (and the same for `client_secret`). Leave the value off the command line; `security` then prompts for it.
+3. **Sync**:
+   ```sh
+   starling-mcp paypal sync --profile paypal-business          # first run: the last 3 years (PayPal's limit)
+   starling-mcp paypal sync --profile paypal-business --backup-dir "<backup folder>"
+   ```
+4. **Expose the tools** on the server entry that holds the *business* Starling profile, by adding `PAYPAL_PROFILE=paypal-business` to its env:
+   ```sh
+   claude mcp add starling-business --scope user -e STARLING_PROFILE=business -e PAYPAL_PROFILE=paypal-business -- node ~/src/starling-mcp/dist/index.js
+   ```
+
+How it works:
+- **Credentials.** OAuth2 client credentials against `api-m.paypal.com` (`PAYPAL_ENVIRONMENT=sandbox` uses `api-m.sandbox.paypal.com`). The token stays in memory until shortly before it expires. The client id and secret are read from the Keychain and never printed or logged.
+- **Backfill.** Fetches `GET /v1/reporting/transactions` in 31-day windows (`fields=all`, `page_size=500`, every page), newest first, back three years.
+- **Later runs.** Refetch from the previous run's *data refresh time*, minus 14 days (`--overlap-days`). PayPal data lags up to about 3 hours, and pending items can take more than a week to clear. Upserts are idempotent.
+- **Balances.** `GET /v1/reporting/balances` is snapshotted on every run.
+- **Rate limits.** A 429 or 5xx is retried with backoff (`Retry-After` when present). Persistent 429s or `--max-requests` (default 1,500) stop the run with exit code 75, and the next run resumes.
+- **Storage.** `~/.local/share/starling-mcp/<profile>.sqlite` (`PAYPAL_DB_PATH` overrides it), with the same conventions as the Starling mirror: mode 0600, WAL, migrations, a lock file, and `--backup-dir` rotation of 14 copies. Columns:
+  - transaction id, event code, status, initiation and updated dates
+  - gross, fee and net (exact minor units), currency
+  - counterparty name and email (PayPal's `payer_info`, which is the other party for both money in and money out)
+  - subject, note, invoice and custom ids, item names and details, raw JSON
+  - an FTS5 index over the text fields
+- **Tools** (no API calls; registered only when `PAYPAL_PROFILE` is set):
+  - `paypal_query_transactions`: date, amount, direction, text, event code or group, status, currency.
+  - `paypal_mirror_status`
+  - `paypal_match_starling`: pairs PayPal's bank deposits (T03xx), withdrawals (T04xx) and GBP or currency-converted payments with Starling business feed items in the local Starling mirror. Matches need the same GBP amount, opposite direction and dates within ±5 days, and the Starling item must mention PayPal unless `anyCounterparty`. A foreign-currency payment uses the GBP leg of its T02xx conversion. Each Starling item matches once, deposits first, so a payment funded by a deposit doesn't claim the same bank debit. `PAYPAL_MATCH_STARLING_DB` points at a different Starling mirror.
+- `doctor` shows the PayPal mirror when `PAYPAL_PROFILE` is set.
 
 ## Privacy and safety design
 

@@ -31,18 +31,16 @@ export interface TokenLocation {
 }
 
 export async function readKeychain(account: string): Promise<string | undefined> {
+  return readGenericPassword(KEYCHAIN_SERVICE, account);
+}
+
+/** Reads a generic password from the macOS Keychain; undefined if missing (or not on macOS). */
+export async function readGenericPassword(service: string, account: string): Promise<string | undefined> {
   if (process.platform !== "darwin") return undefined;
   try {
-    const { stdout } = await execFileAsync(SECURITY, [
-      "find-generic-password",
-      "-s",
-      KEYCHAIN_SERVICE,
-      "-a",
-      account,
-      "-w",
-    ]);
-    const token = stdout.trim();
-    return token || undefined;
+    const { stdout } = await execFileAsync(SECURITY, ["find-generic-password", "-s", service, "-a", account, "-w"]);
+    const value = stdout.trim();
+    return value || undefined;
   } catch {
     return undefined;
   }
@@ -142,12 +140,26 @@ export function readHidden(prompt: string): Promise<string> {
  * seen in process listings or shell history.
  */
 export function storeToken(where: TokenLocation, token: string): Promise<void> {
-  if (!SAFE_ACCOUNT.test(where.keychainAccount)) {
-    return Promise.reject(new Error(`Unsafe Keychain account name: ${where.keychainAccount}`));
-  }
   if (!/^[A-Za-z0-9._~+/=-]+$/.test(token)) {
     return Promise.reject(new Error("That does not look like a Starling access token (unexpected characters)."));
   }
+  const label = `Starling MCP personal access token (${where.environment}${where.profile ? `, ${where.profile}` : ""})`;
+  return storeGenericPassword(KEYCHAIN_SERVICE, where.keychainAccount, label, token);
+}
+
+/**
+ * Stores a secret in the Keychain (replacing any existing item). The secret goes to `security` over a pipe, never
+ * as a command-line argument; names are restricted to a safe set because they are written into that command, and
+ * the secret itself is redacted from any error text.
+ */
+export function storeGenericPassword(service: string, account: string, label: string, secret: string): Promise<void> {
+  if (!SAFE_ACCOUNT.test(service) || !SAFE_ACCOUNT.test(account)) {
+    return Promise.reject(new Error(`Unsafe Keychain service/account name: ${service}/${account}`));
+  }
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(secret)) {
+    return Promise.reject(new Error("The value contains unexpected characters."));
+  }
+  if (/["\\\n]/.test(label)) return Promise.reject(new Error("Unsafe Keychain label"));
   return new Promise((resolve, reject) => {
     const child = spawn(SECURITY, ["-i"], { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
@@ -160,14 +172,11 @@ export function storeToken(where: TokenLocation, token: string): Promise<void> {
         ? resolve()
         : reject(
             new Error(
-              `Could not save to the Keychain: ${stderr.replaceAll(token, "<token>").trim() || `security exited with code ${code}`}`,
+              `Could not save to the Keychain: ${stderr.replaceAll(secret, "<secret>").trim() || `security exited with code ${code}`}`,
             ),
           ),
     );
-    const label = `Starling MCP personal access token (${where.environment}${where.profile ? `, ${where.profile}` : ""})`;
-    child.stdin.end(
-      `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${where.keychainAccount} -l "${label}" -w "${token}"\n`,
-    );
+    child.stdin.end(`add-generic-password -U -s ${service} -a ${account} -l "${label}" -w "${secret}"\n`);
   });
 }
 

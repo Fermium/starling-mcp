@@ -189,8 +189,8 @@ function configure(db: DatabaseSync): void {
   db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
 }
 
-/** Opens (creating if needed) the mirror for writing: WAL, 0600 files, migrations applied. */
-export function openMirror(path: string): DatabaseSync {
+/** Opens (creating if needed) a SQLite file for writing: WAL, 0600 files, the given migrations applied. */
+export function openDatabase(path: string, migrations: string[]): DatabaseSync {
   const { DatabaseSync } = loadSqlite();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // Create the file with 0600 before SQLite opens it: SQLite gives -wal and -shm the same mode.
@@ -199,33 +199,43 @@ export function openMirror(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   configure(db);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
-  migrate(db);
+  migrate(db, migrations);
   return db;
 }
 
-/** Opens an existing mirror read-only (SQLite refuses every write on this connection). */
-export function openMirrorReadOnly(path: string): DatabaseSync | undefined {
+/** Opens an existing SQLite file read-only (SQLite refuses every write on this connection). */
+export function openDatabaseReadOnly(path: string, maxVersion?: number): DatabaseSync | undefined {
   if (!existsSync(path)) return undefined;
   const { DatabaseSync } = loadSqlite();
   const db = new DatabaseSync(path, { readOnly: true });
   configure(db);
   const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-  if (version > SCHEMA_VERSION) {
+  if (maxVersion !== undefined && version > maxVersion) {
     db.close();
     throw new Error(`${path} was created by a newer starling-mcp (schema ${version}); update this install.`);
   }
   return db;
 }
 
-export function migrate(db: DatabaseSync): void {
+/** Opens (creating if needed) the Starling mirror for writing. */
+export function openMirror(path: string): DatabaseSync {
+  return openDatabase(path, MIGRATIONS);
+}
+
+/** Opens an existing Starling mirror read-only. */
+export function openMirrorReadOnly(path: string): DatabaseSync | undefined {
+  return openDatabaseReadOnly(path, SCHEMA_VERSION);
+}
+
+export function migrate(db: DatabaseSync, migrations: string[] = MIGRATIONS): void {
   const current = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-  if (current > SCHEMA_VERSION) {
-    throw new Error(`The mirror uses schema ${current}, newer than this starling-mcp (${SCHEMA_VERSION}).`);
+  if (current > migrations.length) {
+    throw new Error(`The database uses schema ${current}, newer than this starling-mcp (${migrations.length}).`);
   }
-  for (let v = current; v < SCHEMA_VERSION; v++) {
+  for (let v = current; v < migrations.length; v++) {
     db.exec("BEGIN");
     try {
-      db.exec(MIGRATIONS[v]!);
+      db.exec(migrations[v]!);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec("COMMIT");
     } catch (err) {

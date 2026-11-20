@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { openMirrorReadOnly } from "./db.js";
+import { openDatabaseReadOnly } from "./db.js";
 
 const KEEP = 14;
 
@@ -22,7 +22,7 @@ export function backupMirror(
   if (realpathSync(dir) === liveDir) {
     throw new Error("The backup directory must not be the directory that holds the live mirror.");
   }
-  const db = openMirrorReadOnly(dbPath);
+  const db = openDatabaseReadOnly(dbPath);
   if (!db) throw new Error(`No mirror at ${dbPath} to back up; run sync first.`);
   const name = `${profile}-${now.toISOString().slice(0, 10)}.sqlite`;
   const target = join(dir, name);

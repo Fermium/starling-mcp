@@ -7,11 +7,22 @@ import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StarlingApiError, StarlingClient } from "./client.js";
 import { type AccessTier, CONFIG_DIR, type Config, loadConfig, tierAllows } from "./config.js";
-import { assertPrivateFile, deleteToken, loadAccessToken, readHidden, renameToken, storeToken } from "./credentials.js";
+import {
+  assertPrivateFile,
+  deleteToken,
+  loadAccessToken,
+  readHidden,
+  renameToken,
+  storeGenericPassword,
+  storeToken,
+} from "./credentials.js";
 import { backupMirror } from "./mirror/backup.js";
 import { openMirrorReadOnly } from "./mirror/db.js";
 import { sync } from "./mirror/sync.js";
 import { OPERATIONS } from "./operations.js";
+import { loadPayPalConfig, loadPayPalCredentials, PayPalClient } from "./paypal/client.js";
+import { openPayPalDbReadOnly } from "./paypal/db.js";
+import { syncPayPal } from "./paypal/sync.js";
 import { createServer, registeredToolCount, toolEnabled, VERSION } from "./server.js";
 import { loadSigner, type RequestSigner } from "./signing.js";
 import { consentNote } from "./tools/accounts.js";
@@ -171,6 +182,7 @@ async function doctor(): Promise<void> {
       : "\nAll enabled tools are covered by the token's scopes.",
   );
   console.log(`\n${mirrorSummary(config).join("\n")}`);
+  for (const line of paypalSummary()) console.log(line);
   console.log(`\nAPI requests used by this check: ${client.requestsToday}`);
 }
 
@@ -252,6 +264,87 @@ function expandPath(p: string): string {
   return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
 }
 
+async function paypalCommand(sub: string | undefined, args: string[]): Promise<void> {
+  const config = loadPayPalConfig(process.env, process.env.STARLING_PROFILE);
+  if (sub === "token" && args[0] === "set") {
+    const clientId = await readHidden(`PayPal ${config.environment} REST app client ID (hidden), then Return: `);
+    const clientSecret = await readHidden("Client secret (hidden), then Return: ");
+    if (!clientId || !clientSecret) throw new Error("Both the client ID and the secret are needed.");
+    const client = new PayPalClient(config, async () => ({ clientId, clientSecret }));
+    console.log("Checking them with PayPal…");
+    await client.accessToken();
+    await storeGenericPassword(config.keychainService, "client_id", `PayPal ${config.profile} client id`, clientId);
+    await storeGenericPassword(
+      config.keychainService,
+      "client_secret",
+      `PayPal ${config.profile} client secret`,
+      clientSecret,
+    );
+    console.log(`Credentials OK and saved to the Keychain (service "${config.keychainService}").`);
+    return;
+  }
+  if (sub === "sync") {
+    const number = (name: string) => {
+      const v = optionValue(args, name);
+      if (v === undefined) return undefined;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer`);
+      return n;
+    };
+    const client = new PayPalClient(config, () => loadPayPalCredentials(config));
+    const summary = await syncPayPal(client, config.dbPath, {
+      profile: config.profile,
+      full: args.includes("--full"),
+      maxRequests: number("--max-requests"),
+      overlapDays: number("--overlap-days"),
+      log: args.includes("--verbose") ? (line) => console.log(line) : undefined,
+    });
+    console.log(
+      `${config.profile}: ${summary.outcome}. ${summary.newItems} new, ${summary.updatedItems} updated, ${summary.totalItems} total transactions ` +
+        `(${summary.earliest?.slice(0, 10) ?? "-"} to ${summary.latest?.slice(0, 10) ?? "-"})` +
+        `${summary.backfillComplete ? "" : ", history still backfilling"}. ${summary.apiCalls} API calls` +
+        `${summary.dataRefreshedAt ? `; PayPal data refreshed ${summary.dataRefreshedAt}` : ""}.`,
+    );
+    if (summary.message) console.log(summary.message);
+    if (summary.outcome !== "complete") {
+      process.exitCode = 75;
+      return;
+    }
+    const backupDir = optionValue(args, "--backup-dir");
+    if (backupDir) {
+      const { path, removed } = backupMirror(config.dbPath, expandPath(backupDir), config.profile);
+      console.log(`Backup written to ${path}${removed.length ? ` (removed ${removed.length} old copies)` : ""}.`);
+    }
+    return;
+  }
+  throw new Error(
+    "Usage: starling-mcp paypal sync --profile <name> [--full] [--backup-dir <dir>] | paypal token set --profile <name>",
+  );
+}
+
+function paypalSummary(): string[] {
+  const profile = process.env.PAYPAL_PROFILE?.trim();
+  if (!profile) return [];
+  const config = loadPayPalConfig(process.env);
+  const db = openPayPalDbReadOnly(config.dbPath);
+  if (!db)
+    return [`PayPal mirror: none yet at ${config.dbPath} (starling-mcp paypal sync --profile ${config.profile})`];
+  try {
+    const r = db
+      .prepare("SELECT COUNT(*) AS n, MIN(initiation_date) AS a, MAX(initiation_date) AS b FROM transactions")
+      .get() as { n: number; a: string | null; b: string | null };
+    const last = db
+      .prepare("SELECT finished_at, outcome FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get() as { finished_at: string; outcome: string } | undefined;
+    return [
+      `PayPal mirror: ${config.dbPath} (${config.environment}, Keychain service "${config.keychainService}")`,
+      `               ${r.n} transactions, ${r.a?.slice(0, 10) ?? "-"} to ${r.b?.slice(0, 10) ?? "-"}; last sync ${last ? `${last.finished_at} (${last.outcome})` : "never"}`,
+    ];
+  } finally {
+    db.close();
+  }
+}
+
 async function generateKeys(force: boolean): Promise<void> {
   await mkdir(KEY_DIR, { recursive: true, mode: 0o700 });
   for (const name of ["api", "rotation"]) {
@@ -311,6 +404,10 @@ Usage:
   starling-mcp sync [--profile <name>] [--full] [--dry-run] [--backup-dir <dir>] [--max-requests N] [--verbose]
                                        Update the local SQLite mirror (read-only API calls). First run backfills all history;
                                        later runs are incremental. Exit code 75 = stopped early (budget), run again to resume.
+  starling-mcp paypal sync --profile <name> [--full] [--backup-dir <dir>] [--max-requests N] [--overlap-days N]
+                                       Read-only mirror of a PayPal business account (Transaction Search API)
+  starling-mcp paypal token set --profile <name>
+                                       Store a PayPal REST app's client ID and secret in the Keychain (hidden input)
   starling-mcp scopes                  List the token scopes each access tier needs
   starling-mcp keys generate [--force] Create request-signing key pairs in ${KEY_DIR}
   starling-mcp keys rotation-signature <new-public-key.pem> <rotation-key-uid>
@@ -397,6 +494,8 @@ async function main(args: string[]): Promise<void> {
       break;
     case "doctor":
       return doctor();
+    case "paypal":
+      return paypalCommand(sub, rest);
     case "sync":
       return runSyncCommand([sub, ...rest].filter((x): x is string => x !== undefined));
     case "scopes":

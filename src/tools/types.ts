@@ -41,6 +41,8 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   readOnly?: boolean;
   /** Only registered when a download directory is configured (the tool's main job is saving a file). */
   writesFiles?: boolean;
+  /** Only registered when PAYPAL_PROFILE is set (the PayPal mirror tools). */
+  needsPayPal?: boolean;
   destructive?: boolean;
   idempotent?: boolean;
   input: S;

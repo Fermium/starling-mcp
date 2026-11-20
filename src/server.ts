@@ -29,9 +29,13 @@ function instructions(config: Config): string {
 }
 
 /** Whether a tool is registered under this configuration. */
-export function toolEnabled(config: Config, tool: { tier: AccessTier; writesFiles?: boolean }): boolean {
+export function toolEnabled(
+  config: Config,
+  tool: { tier: AccessTier; writesFiles?: boolean; needsPayPal?: boolean },
+): boolean {
   if (!tierAllows(config, tool.tier)) return false;
   if (tool.writesFiles && !config.downloadDir) return false;
+  if (tool.needsPayPal && !config.paypal) return false;
   return true;
 }
 
