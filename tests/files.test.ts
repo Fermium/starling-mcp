@@ -166,9 +166,10 @@ describe("server-supplied file names", () => {
       await (await connect(testConfig({ STARLING_DOWNLOAD_DIR: "off" }), fakeStarling({}).fetchImpl)).listTools()
     ).tools;
     const offNames = off.map((t) => t.name);
-    expect(on.length - off.length).toBe(2);
+    expect(on.length - off.length).toBe(3);
     expect(offNames).not.toContain("export_transactions_csv");
     expect(offNames).not.toContain("download_transaction_attachment");
+    expect(offNames).not.toContain("download_monthly_export");
     expect(offNames).toContain("get_profile_image");
   });
 });

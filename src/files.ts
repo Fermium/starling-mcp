@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -56,6 +57,25 @@ export function extensionFor(contentType: string): string {
 }
 
 const MAX_NAME_BYTES = 255;
+
+/** Size and SHA-256 of saved data, so a caller can verify the file it was given. */
+export function fileFacts(path: string, data: Buffer | string) {
+  const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+  return { path, bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex") };
+}
+
+/** Lower-case ASCII slug for file names: "Easy Saver" → "easy-saver". */
+export function slug(value: string, max = 40): string {
+  return (
+    value
+      .normalize("NFKD")
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase()
+      .slice(0, max)
+      .replace(/-+$/, "") || "account"
+  );
+}
 
 /** Thrown when a requested file name or path is not allowed. */
 export class UnsafePathError extends Error {}

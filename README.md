@@ -36,7 +36,7 @@ Before adding a real token, you can check that the server starts and lists its t
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | STARLING_ENVIRONMENT=sandbox node dist/index.js | grep -o '"readOnlyHint":true' | wc -l   # → 54 read-only tools
+  | STARLING_ENVIRONMENT=sandbox node dist/index.js | grep -o '"readOnlyHint":true' | wc -l   # → 55 read-only tools
 ```
 
 You can also run it without cloning, with `npx`. It builds from source on first run. Pin a commit so the code can't change under you:
@@ -60,7 +60,8 @@ In the [Starling Developer Portal](https://developer.starlingbank.com), go to *P
 | | Scopes |
 |---|---|
 | **Needed** for balances, transactions, spaces and the analysis tools | `account:read`, `balance:read`, `transaction:read`, `space:read`, `savings-goal:read` |
-| **Useful** for a finance assistant | `account-identifier:read` (sort code / IBAN), `mandate:read` (direct debits), `standing-order:read`, `payee:read`, `card:read`, `customer:read` (personal details), `account-holder-type:read`, `feed-export-csv:read` (CSV statements), `attachment:read` and `receipts:read` (receipts) |
+| **Useful** for a finance assistant | `account-identifier:read` (sort code / IBAN), `mandate:read` (direct debits), `standing-order:read`, `payee:read`, `card:read`, `customer:read` (personal details), `account-holder-type:read`, `feed-export-csv:read` (CSV exports, including `download_monthly_export`), `attachment:read` and `receipts:read` (receipts) |
+| **Not needed** | `statement-pdf:read` and `statement-csv:read`. Starling still offers these scopes, but its API no longer serves statements, so they do nothing (`doctor` flags them as unused) |
 | **Everything else read-only** | `starling-mcp scopes` lists all 29 read scopes the server can use |
 
 `starling-mcp doctor` shows which tools the token's scopes don't cover, and warns if the token has any write scopes.
@@ -228,7 +229,8 @@ This creates RSA-4096 *API* and *rotation* key pairs in `~/.config/starling-mcp/
 | `get_account_balance` | read | Gets an account's balance. |
 | `get_account_identifiers` | read | Gets the account's sort code and account number, plus IBAN and BIC (and any other identifiers). |
 | `check_funds` | read | Checks whether the account has enough available money for a payment of the given amount, taking the overdraft into account. |
-| `export_transactions_csv` | read | Downloads Starling's CSV export of all settled transactions on the main account between two dates (the same export as the app). |
+| `export_transactions_csv` | read | Downloads Starling's CSV export of all settled transactions on the main account between two dates (the same export as the app). Returns the path, size and SHA-256. |
+| `download_monthly_export` | read | Saves one calendar month (`YYYY-MM`) of the CSV export as `starling-<currency>-<account name>-<account number>-statement-YYYY-MM.csv` and returns the path, size and SHA-256. This is the closest equivalent to a monthly statement. |
 
 ### Transactions
 
@@ -349,7 +351,7 @@ Personal access tokens are limited to **5 requests per second and 1,000 per day*
 - **Payment Services API.** This is for payment businesses using Starling as a payment rail; it needs mTLS and a commercial agreement.
 - **Onboarding / Banking-as-a-Service and Marketplace OAuth.** These are partner-only APIs.
 - **Webhooks.** Starling pushes these to a public HTTPS endpoint. Receiving them would mean running an internet-facing server, which conflicts with this project's local-only design. Use `get_feed_changes_since` to pick up changes instead.
-- **Statements and spending-insights endpoints.** Starling has withdrawn these from the public API (they now return 404). Use `export_transactions_csv` and `summarise_spending` instead.
+- **Official monthly statements (PDF/CSV) and spending-insights endpoints.** Starling has withdrawn these from the public API. They are not in the live OpenAPI spec, and `GET /api/v2/accounts/{accountUid}/statement/available-periods`, `/statement/download` and `/statement/downloadForDateRange` return an empty 404 (the same as any unknown route), even for tokens granted `statement-pdf:read` / `statement-csv:read` (checked November 2026). Use `download_monthly_export` (one month of the CSV export, with size and SHA-256), `export_transactions_csv` and `summarise_spending` instead. For an official PDF statement, download it from the Starling app or website.
 
 ## Development
 

@@ -109,6 +109,14 @@ async function doctor(): Promise<void> {
   const note = consentNote(identity.consentExpiresAt);
   if (note) console.log(`Consent:       ${note}`);
   console.log(`Granted scopes (${granted.size}): ${[...granted].sort().join(", ")}`);
+  const statementScopes = [...granted].filter((sc) => sc.startsWith("statement-")).sort();
+  if (statementScopes.length) {
+    console.log(
+      `Unused scopes: ${statementScopes.join(", ")}\n` +
+        "               Starling's API no longer serves monthly statements (the statement endpoints return 404), so these\n" +
+        "               scopes are not used. download_monthly_export saves a month of the CSV export instead (feed-export-csv:read).",
+    );
+  }
   const writeScopes = [...granted].filter((sc) => !sc.endsWith(":read")).sort();
   if (writeScopes.length) {
     console.log(
