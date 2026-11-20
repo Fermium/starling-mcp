@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- **Local mirror.** `starling-mcp sync --profile <p> [--full] [--dry-run] [--backup-dir <dir>] [--max-requests N] [--daily-limit N]` keeps a complete SQLite copy (`~/.local/share/starling-mcp/<profile>.sqlite`, or `STARLING_DB_PATH`) of every account, space and savings goal: the account holder, accounts, categories, all feed items with their raw JSON and an FTS5 index, balance snapshots, mandates, standing orders and payees.
+  - The first run backfills in one-year windows down to each account's creation date. Later runs are incremental via `changesSince`, with a 7-day overlap, and upserts are idempotent.
+  - API budgets: 600 calls per run and 900 per day by default. A run stops cleanly with exit code 75 and resumes on the next run; a 429 is treated the same way.
+  - A sync lock stops two runs of one profile overlapping. Backups use `VACUUM INTO` with an atomic rename, mode 0600 and the newest 14 kept.
+  - Uses Node's built-in `node:sqlite`, so there are no new dependencies and no native build.
+- MCP tools that read the mirror with no API calls: `query_transactions`, `mirror_status`, `summarise_spending_offline` and `find_recurring_payments_offline`. `doctor` shows the mirror's status.
+- `scripts/sync-mirrors.sh` for scheduled syncs of several profiles, with backups.
 - `download_monthly_export(accountUid?, yearMonth, saveAs?)` saves one calendar month of the CSV transaction export as `starling-<currency>-<account name slug>-<account number, or first 8 chars of the UID>-statement-YYYY-MM.csv`. It writes only inside the download directory with the usual confinement and `O_EXCL` rules, and returns the path, size, SHA-256, date range, row count, and whether the month is partial (the current month ends today). The account number is used when the token has `account-identifier:read`.
 - `export_transactions_csv` now returns size and SHA-256 too, as JSON (path, bytes, sha256, transactions).
 - `doctor` flags `statement-pdf:read` / `statement-csv:read` as unused. Starling's API no longer serves official monthly statements: the statement routes are missing from the live spec and return 404 even with those scopes.
@@ -14,6 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `doctor` shows the account holder (type, name, UID) and every account the token can see, with account UIDs, and explains that a token covers exactly one account holder. Business, sole-trader and joint accounts need their own token and profile, because Starling's API ties each token to a single account holder.
 
 ### Changed
+- Requires Node.js 22.13 or later (`node:sqlite` without a flag).
 - Keychain errors from `security` have the token redacted before they are shown.
 - Breaking: token lookup order is now `STARLING_ACCESS_TOKEN_FILE`, then `STARLING_ACCESS_TOKEN`, then the Keychain, so an explicit setting is never silently overridden by a Keychain item. A configured token file that is missing, empty or readable by others is an error instead of a fallthrough.
 - Breaking: files are only ever written directly inside `STARLING_DOWNLOAD_DIR` (new default `~/Downloads/starling-mcp/<profile>`). Other absolute paths, `..`, subfolders and unsafe server-supplied names are refused; files open with `O_EXCL | O_NOFOLLOW`. `STARLING_DOWNLOAD_DIR=off` removes the file-saving tools.

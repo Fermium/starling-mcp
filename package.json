@@ -30,7 +30,7 @@
     "model-context-protocol"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.13.0"
   },
   "author": "Neil Johnson",
   "license": "MIT",

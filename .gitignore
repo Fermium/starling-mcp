@@ -5,3 +5,8 @@ coverage/
 *.pem
 .env
 .env.*
+
+# Local mirror databases and backups (bank data)
+*.sqlite
+*.sqlite-*
+*.sqlite.lock

@@ -17,7 +17,7 @@ A privacy-first [Model Context Protocol](https://modelcontextprotocol.io) server
 
 ## Run locally (macOS)
 
-You need **Node.js 22 or later** (`node -v`; `brew install node` if missing) and the Xcode command line tools for `git`. There are no native modules, so nothing is compiled.
+You need **Node.js 22.13 or later** (for the built-in SQLite used by the local mirror) (`node -v`; `brew install node` if missing) and the Xcode command line tools for `git`. There are no native modules, so nothing is compiled.
 
 ```sh
 git clone https://github.com/Fermium/starling-mcp.git ~/src/starling-mcp
@@ -36,7 +36,7 @@ Before adding a real token, you can check that the server starts and lists its t
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | STARLING_ENVIRONMENT=sandbox node dist/index.js | grep -o '"readOnlyHint":true' | wc -l   # → 55 read-only tools
+  | STARLING_ENVIRONMENT=sandbox node dist/index.js | grep -o '"readOnlyHint":true' | wc -l   # → 59 read-only tools
 ```
 
 You can also run it without cloning, with `npx`. It builds from source on first run. Pin a commit so the code can't change under you:
@@ -146,6 +146,67 @@ docker run --rm -i -e STARLING_ACCESS_TOKEN starling-mcp
 ```
 
 On a Mac, running it natively is more private, because the token stays in the Keychain.
+
+## Local mirror
+
+`starling-mcp sync` keeps a complete local copy of a profile's Starling data in SQLite. Most questions then cost no API calls, and your history survives the 90-day consent lapse: after consent expires, Starling only serves the last 90 days.
+
+```sh
+starling-mcp sync --profile personal --dry-run    # estimate the API calls first
+starling-mcp sync --profile personal              # first run: full history; later runs: incremental
+starling-mcp sync --profile personal --backup-dir "$HOME/Library/CloudStorage/GoogleDrive-<you>/My Drive/Finance/Starling/mirror-backups"
+```
+
+- **Storage.** One file per profile, `~/.local/share/starling-mcp/<profile>.sqlite` (`STARLING_DB_PATH` overrides it). Mode 0600, WAL journal, schema version in `PRAGMA user_version` with migrations. Tables:
+  - `account_holder`, `accounts`, `categories` (main balance, savings goals, spending spaces)
+  - `feed_items`: every column, the raw JSON, `first_seen` and `last_updated`, plus an FTS5 index on counterparty, reference and note
+  - `balance_snapshots`, `direct_debit_mandates`, `standing_orders`, `payees`
+  - `sync_state` (per-category cursors), `sync_runs`, `api_usage`
+- **First run.** Backfills every category of every account, newest first, in one-year windows (Starling's limit) down to the account's `createdAt`. A window that comes back with 1,000 or more items is split in half and fetched again. If consent has lapsed, the backfill pauses instead of recording 90 days as the full history.
+- **Later runs.** Incremental via the changes feed (`changesSince`), starting 7 days before the previous run started, so settled, edited, reversed and declined items are updated. Upserts are idempotent, and only rows whose JSON changed are rewritten. If the last sync is over a year old, sync refetches by window instead.
+- **API budget.** Calls are paced at 5/second. A run makes at most 600 calls (`--max-requests`), and the mirror makes at most 900 per UTC day (`--daily-limit`), so the assistant keeps some of Starling's 1,000. A 429 counts as the limit being reached. In every case the run saves its progress and exits with code 75; run `sync` again to resume. `--full` re-backfills from scratch.
+- **Backups.** `--backup-dir` runs only after a complete sync. It writes a consistent copy (`VACUUM INTO`) named `<profile>-YYYY-MM-DD.sqlite`: first to a temporary name, then made 0600 and renamed, so a Drive client never uploads a half-written file. It keeps the newest 14 and deletes only files matching that name pattern. The live database is never written there, and sync refuses to back up into the live folder.
+- **MCP tools (no API calls):**
+  - `query_transactions`: date and amount range, direction, full-text search, spending category, account, space and status, across every account and space. Each row names its profile, account and space.
+  - `mirror_status`: last sync, rows and coverage per category, backfill state, empty months.
+  - `summarise_spending_offline` and `find_recurring_payments_offline`: the same analyses as the live tools, over the whole history. Each reports the mirror's age and says when it is stale (more than 36 hours old).
+  - `doctor` also shows the mirror's status.
+- **Not detected.** Items deleted on Starling's side (the changes feed doesn't report removals), and spaces closed before the first sync.
+- **No raw SQL tool.** Node's SQLite driver is synchronous and can't interrupt a query, so one runaway query would freeze the server. The fixed tools cover the common questions. For anything else, open the file yourself with `sqlite3 ~/.local/share/starling-mcp/<profile>.sqlite`.
+
+**Typical cost.** A first sync uses about 10 calls for metadata, plus one per category per year of history. Busy years (1,000 or more items in a window) take extra calls, so `--dry-run` can underestimate. A daily incremental sync uses about 15 calls plus one per category.
+
+### Scheduled sync (macOS)
+
+`scripts/sync-mirrors.sh` syncs several profiles one after another and backs each one up. Run it daily from a LaunchAgent. Use absolute paths, because launchd doesn't see your shell's `PATH`. The Keychain must be unlocked, so the job runs while you're logged in. The first time it writes to a cloud folder, macOS may ask for permission, so run it once from Terminal first.
+
+`~/Library/LaunchAgents/com.example.starling-mcp.sync.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.starling-mcp.sync</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/you/src/starling-mcp/scripts/sync-mirrors.sh</string>
+    <string>personal</string><string>business</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>NODE</key><string>/opt/homebrew/bin/node</string>
+    <key>STARLING_BACKUP_DIR</key><string>/Users/you/Library/CloudStorage/GoogleDrive-you@example.com/My Drive/Finance/Starling/mirror-backups</string>
+  </dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/you/.local/state/starling-mcp/sync.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/.local/state/starling-mcp/sync.log</string>
+</dict></plist>
+```
+
+```sh
+mkdir -p ~/.local/state/starling-mcp       # launchd does not create the log folder
+plutil -lint ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
+launchctl kickstart gui/$(id -u)/com.example.starling-mcp.sync   # run it now once
+```
 
 ## Privacy and safety design
 
