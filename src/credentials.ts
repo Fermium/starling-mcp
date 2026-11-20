@@ -158,7 +158,11 @@ export function storeToken(where: TokenLocation, token: string): Promise<void> {
     child.on("exit", (code) =>
       code === 0 && !stderr.trim()
         ? resolve()
-        : reject(new Error(`Could not save to the Keychain: ${stderr.trim() || `security exited with code ${code}`}`)),
+        : reject(
+            new Error(
+              `Could not save to the Keychain: ${stderr.replaceAll(token, "<token>").trim() || `security exited with code ${code}`}`,
+            ),
+          ),
     );
     const label = `Starling MCP personal access token (${where.environment}${where.profile ? `, ${where.profile}` : ""})`;
     child.stdin.end(
@@ -174,4 +178,42 @@ export async function deleteToken(where: TokenLocation): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export interface KeychainOps {
+  read(account: string): Promise<string | undefined>;
+  store(where: TokenLocation, token: string): Promise<void>;
+  remove(where: TokenLocation): Promise<boolean>;
+}
+
+const realKeychain: KeychainOps = { read: readKeychain, store: storeToken, remove: deleteToken };
+
+/**
+ * Moves (or with keep, copies) a stored token from one Keychain item to
+ * another without the user re-entering it. The token only passes through
+ * memory and the `security` pipe; it is never printed or logged. The new item
+ * is read back and compared before the old one is removed.
+ */
+export async function renameToken(
+  from: TokenLocation,
+  to: TokenLocation,
+  options: { keep?: boolean; force?: boolean } = {},
+  keychain: KeychainOps = realKeychain,
+): Promise<{ removedOld: boolean }> {
+  if (from.keychainAccount === to.keychainAccount) {
+    throw new Error(`"${from.keychainAccount}" is both the source and the destination.`);
+  }
+  const token = await keychain.read(from.keychainAccount);
+  if (!token) throw new Error(`No token found in the Keychain under account "${from.keychainAccount}".`);
+  if (!options.force && (await keychain.read(to.keychainAccount))) {
+    throw new Error(
+      `A token is already stored under "${to.keychainAccount}". Use --force to replace it, or "token delete" it first.`,
+    );
+  }
+  await keychain.store(to, token);
+  if ((await keychain.read(to.keychainAccount)) !== token) {
+    throw new Error(`Could not verify the copy under "${to.keychainAccount}"; the original was left in place.`);
+  }
+  if (options.keep) return { removedOld: false };
+  return { removedOld: await keychain.remove(from) };
 }

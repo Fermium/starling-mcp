@@ -4,9 +4,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StarlingClient } from "./client.js";
+import { StarlingApiError, StarlingClient } from "./client.js";
 import { type AccessTier, CONFIG_DIR, type Config, loadConfig, tierAllows } from "./config.js";
-import { assertPrivateFile, deleteToken, loadAccessToken, readHidden, storeToken } from "./credentials.js";
+import { assertPrivateFile, deleteToken, loadAccessToken, readHidden, renameToken, storeToken } from "./credentials.js";
 import { OPERATIONS } from "./operations.js";
 import { createServer, registeredToolCount, toolEnabled, VERSION } from "./server.js";
 import { loadSigner, type RequestSigner } from "./signing.js";
@@ -116,12 +116,31 @@ async function doctor(): Promise<void> {
     );
   }
 
-  const accounts = await client.json<{ accounts?: { name: string; currency: string; accountType: string }[] }>({
-    method: "GET",
-    path: "/api/v2/accounts",
-  });
+  const optional = <T>(path: string) =>
+    client.json<T>({ method: "GET", path }).catch((err: unknown) => {
+      if (err instanceof StarlingApiError && (err.status === 403 || err.status === 404)) return undefined;
+      throw err;
+    });
+  const holder = await optional<{ accountHolderUid?: string; accountHolderType?: string }>("/api/v2/account-holder");
+  const holderName = granted.has("account-holder-name:read")
+    ? await optional<{ accountHolderName?: string }>("/api/v2/account-holder/name")
+    : undefined;
+  const accounts = await client.json<{
+    accounts?: { accountUid: string; name: string; currency: string; accountType: string }[];
+  }>({ method: "GET", path: "/api/v2/accounts" });
+
   console.log(
-    `Accounts:      ${(accounts.accounts ?? []).map((a) => `${a.name} (${a.currency}, ${a.accountType})`).join("; ") || "none visible"}`,
+    `\nAccount holder: ${holder?.accountHolderType ?? "type unknown (needs account-holder-type:read or customer:read)"}` +
+      `${holderName?.accountHolderName ? `, ${holderName.accountHolderName}` : ""}` +
+      `  [uid ${holder?.accountHolderUid ?? identity.accountHolderUid ?? "unknown"}]`,
+  );
+  const list = accounts.accounts ?? [];
+  if (!list.length) console.log("  (no accounts visible: the token needs account:read or account-list:read)");
+  for (const a of list) console.log(`  ${a.name} (${a.currency}, ${a.accountType})  accountUid ${a.accountUid}`);
+  console.log(
+    "\nA Starling token is tied to exactly ONE account holder. Personal, business, sole-trader and joint accounts\n" +
+      "are separate account holders, each needing its own token (and its own Developer Portal login). To add another,\n" +
+      'store its token under a second profile: starling-mcp token set --profile business (see the README section "Read-only setup for a personal and a business account").',
   );
 
   const blocked: string[] = [];
@@ -193,6 +212,9 @@ Usage:
                                        Check a personal access token and store it in the macOS Keychain (hidden prompt,
                                        or pipe it: pbpaste | starling-mcp token set --profile personal)
   starling-mcp token delete [--sandbox] [--profile <name>]
+  starling-mcp token rename --from <profile> --to <profile> [--sandbox] [--keep] [--force]
+                                       Move a stored token to another profile name without re-entering it
+                                       (e.g. --from personal --to business). "token copy" keeps the original.
   starling-mcp doctor [--profile <name>]
                                        Check configuration, token scopes and account access
   starling-mcp scopes                  List the token scopes each access tier needs
@@ -202,6 +224,12 @@ Usage:
 --profile <name> is the same as STARLING_PROFILE=<name>: one Keychain item (and download folder) per
 Starling login, so personal and business accounts can run as two MCP server entries.
 Configuration is by environment variable; see README.md.`);
+}
+
+function optionValue(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  const value = i >= 0 ? argv[i + 1] : undefined;
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 async function main(args: string[]): Promise<void> {
@@ -244,6 +272,23 @@ async function main(args: string[]): Promise<void> {
           );
         }
         if (!process.stdin.isTTY) console.log("If you piped it from the clipboard, clear it with: pbcopy < /dev/null");
+        return;
+      }
+      if (sub === "rename" || sub === "copy") {
+        const from = optionValue(rest, "--from");
+        const to = optionValue(rest, "--to");
+        if (!from || !to)
+          throw new Error(`Usage: starling-mcp token ${sub} --from <profile> --to <profile> [--sandbox]`);
+        const fromConfig = loadConfig({ ...process.env, STARLING_PROFILE: from, STARLING_KEYCHAIN_ACCOUNT: "" });
+        const toConfig = loadConfig({ ...process.env, STARLING_PROFILE: to, STARLING_KEYCHAIN_ACCOUNT: "" });
+        const { removedOld } = await renameToken(fromConfig, toConfig, {
+          keep: sub === "copy" || rest.includes("--keep"),
+          force: rest.includes("--force"),
+        });
+        console.log(
+          `Token ${removedOld ? "moved" : "copied"} from Keychain account "${fromConfig.keychainAccount}" to "${toConfig.keychainAccount}". ` +
+            `Use STARLING_PROFILE=${to} (or --profile ${to}) from now on.`,
+        );
         return;
       }
       if (sub === "delete") {

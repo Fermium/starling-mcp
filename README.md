@@ -51,7 +51,11 @@ Cloning is the recommended setup: you can read the code you run, and `node /abso
 
 ### 1. Create one read-only token per account
 
-In the [Starling Developer Portal](https://developer.starlingbank.com), go to *Personal Access*, link the Starling login, and create a token. Business accounts need their own token, created while linked to the business login. Tick **only `:read` scopes**. Never tick anything ending in `:create`, `:edit`, `:delete` or `:write`.
+**One token covers one account holder, so a personal and a business account need two tokens.** In Starling, personal, business, sole-trader and joint accounts are separate *account holders*. Starling's API docs say: "Each access token is associated with a single account holder… each kind of account holder is a separate entity and hence requires a separate access token." There is no endpoint or header that switches one token between account holders. Starling also allows each Developer Portal login to be linked to only one Starling account. For the business account, sign up for a second Developer Portal login, link it to the business account, and create the second token there.
+
+One account holder can still have several accounts, such as a GBP account, a euro account and an Easy Saver. One token sees all of them, and tools pick between them with `accountUid`. `starling-mcp doctor --profile <name>` prints the account holder type (`INDIVIDUAL`, `BUSINESS`, `SOLE_TRADER` or `JOINT`) and every account the token can reach, so you can check which one you've stored.
+
+In the [Starling Developer Portal](https://developer.starlingbank.com), go to *Personal Access*, link the Starling login, and create a token. Tick **only `:read` scopes**. Never tick anything ending in `:create`, `:edit`, `:delete` or `:write`.
 
 | | Scopes |
 |---|---|
@@ -75,6 +79,15 @@ starling-mcp doctor --profile business
 ```
 
 Profiles are stored in the Keychain as service `starling-mcp`, account `access-token-production-<profile>`. A server entry with a profile only ever reads its own item and never falls back to another one.
+
+If you stored a token under the wrong profile name, move it without pasting it again. The token is never printed. The new item is checked before the old one is removed:
+
+```sh
+starling-mcp token rename --from personal --to business   # add --force to replace an existing item
+starling-mcp token copy   --from personal --to backup     # keeps the original
+```
+
+A token stored without a profile (plain `starling-mcp token set`) lives under `access-token-production`. Run `starling-mcp token set --profile <name>` again to give it a profile.
 
 If you'd rather use a file than the Keychain, put the token in a file only you can read (`chmod 600`; the server refuses files that other users can read) and set `STARLING_ACCESS_TOKEN_FILE`.
 
