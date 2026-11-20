@@ -174,7 +174,7 @@ starling-mcp sync --profile personal --backup-dir "$HOME/Library/CloudStorage/Go
 - **Not detected.** Items deleted on Starling's side (the changes feed doesn't report removals), and spaces closed before the first sync.
 - **No raw SQL tool.** Node's SQLite driver is synchronous and can't interrupt a query, so one runaway query would freeze the server. The fixed tools cover the common questions. For anything else, open the file yourself with `sqlite3 ~/.local/share/starling-mcp/<profile>.sqlite`.
 
-**Typical cost.** A first sync uses about 10 calls for metadata, plus one per category per year of history. A daily incremental sync uses about 15 calls plus one per category.
+**Typical cost.** A first sync uses about 10 calls for metadata, plus one per category per year of history. Busy years (1,000 or more items in a window) take extra calls, so `--dry-run` can underestimate. A daily incremental sync uses about 15 calls plus one per category.
 
 ### Scheduled sync (macOS)
 
@@ -202,6 +202,8 @@ starling-mcp sync --profile personal --backup-dir "$HOME/Library/CloudStorage/Go
 ```
 
 ```sh
+mkdir -p ~/.local/state/starling-mcp       # launchd does not create the log folder
+plutil -lint ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.starling-mcp.sync.plist
 launchctl kickstart gui/$(id -u)/com.example.starling-mcp.sync   # run it now once
 ```
