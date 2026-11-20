@@ -12,7 +12,8 @@ describe("API coverage", () => {
 
   it("only references real operations", () => {
     for (const tool of ALL_TOOLS)
-      for (const op of tool.operations) expect(OPERATIONS[op], `${tool.name} → ${op}`).toBeDefined();
+      for (const op of [...tool.operations, ...(tool.optionalOperations ?? [])])
+        expect(OPERATIONS[op], `${tool.name} → ${op}`).toBeDefined();
   });
 
   it("has unique tool names", () => {
@@ -22,7 +23,8 @@ describe("API coverage", () => {
 
   it("never exposes a write operation at the read tier", () => {
     for (const tool of ALL_TOOLS.filter((t) => t.tier === "read")) {
-      for (const op of tool.operations) expect(OPERATIONS[op]!.method, `${tool.name} → ${op}`).toBe("GET");
+      for (const op of [...tool.operations, ...(tool.optionalOperations ?? [])])
+        expect(OPERATIONS[op]!.method, `${tool.name} → ${op}`).toBe("GET");
       expect(tool.readOnly, tool.name).toBe(true);
     }
   });

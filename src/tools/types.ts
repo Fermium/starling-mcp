@@ -34,6 +34,8 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   tier: AccessTier;
   /** Starling OpenAPI operationIds this tool calls; used by the spec coverage check. */
   operations: string[];
+  /** Operations called only when the token has their scope; the tool still works without them. */
+  optionalOperations?: string[];
   /** Adds the optional confirmationCode argument and requires human confirmation. */
   confirm?: boolean;
   readOnly?: boolean;

@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- `download_monthly_export(accountUid?, yearMonth, saveAs?)` saves one calendar month of the CSV transaction export as `starling-<currency>-<account name slug>-<account number, or first 8 chars of the UID>-statement-YYYY-MM.csv`. It writes only inside the download directory with the usual confinement and `O_EXCL` rules, and returns the path, size, SHA-256, date range, row count, and whether the month is partial (the current month ends today). The account number is used when the token has `account-identifier:read`.
+- `export_transactions_csv` now returns size and SHA-256 too, as JSON (path, bytes, sha256, transactions).
+- `doctor` flags `statement-pdf:read` / `statement-csv:read` as unused. Starling's API no longer serves official monthly statements: the statement routes are missing from the live spec and return 404 even with those scopes.
 - Profiles (`STARLING_PROFILE`, `--profile <name>`) so one install can run as several MCP server entries, e.g. a personal and a business account. Each profile has its own Keychain item (`access-token-<env>-<profile>`, or `STARLING_KEYCHAIN_ACCOUNT`), its own download folder, and announces itself to the model.
 - `doctor` and `token set` warn when a token has write scopes.
 - `token rename --from <profile> --to <profile>` (and `token copy`, which keeps the original) move a stored Keychain token between profiles without re-entering it. The token is never printed, and the new item is verified before the old one is removed. `--force` replaces an existing destination.
