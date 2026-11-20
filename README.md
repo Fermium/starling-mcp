@@ -1,85 +1,130 @@
-# starling-mcp
+# starling-mcp (Fermium fork)
 
-[![CI](https://github.com/Zesty0wl/starling-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesty0wl/starling-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Fermium/starling-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Fermium/starling-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](https://modelcontextprotocol.io)
-[![Starling API coverage](https://img.shields.io/badge/Starling%20API-87%2F87%20operations-6935D3.svg)](#tools)
 
-A privacy-first [Model Context Protocol](https://modelcontextprotocol.io) server for the [Starling Bank public API](https://developer.starlingbank.com/docs). It lets an AI assistant such as Claude read and manage **your own** Starling accounts: balances, transactions, spaces, savings goals, cards, direct debits, payees, payments and standing orders.
+A privacy-first [Model Context Protocol](https://modelcontextprotocol.io) server for the [Starling Bank public API](https://developer.starlingbank.com/docs), forked from [Zesty0wl/starling-mcp](https://github.com/Zesty0wl/starling-mcp). It lets an AI assistant such as Claude read **your own** Starling accounts: balances, transactions, spaces, savings goals, cards, direct debits, payees and standing orders, plus local analysis (spending summaries, subscription detection, a one-call overview).
 
-It implements **all 87 operations** in Starling's public API spec. A test enforces this, and `npm run spec:check` compares the server against Starling's live spec. It also adds local analysis tools on top: spending summaries, subscription detection and a one-call financial overview.
+**This fork is used read-only.** Write and payment tools exist in the code but are never registered unless you set `STARLING_ENABLE_WRITES` / `STARLING_ENABLE_PAYMENTS`. Don't set them, and give the token read scopes only. The token's scopes are a second, independent limit. What the fork adds:
+
+- **Personal and business accounts side by side.** Each Starling login gets its own *profile*: its own Keychain item, its own MCP server entry and its own download folder. A token file or variable you set explicitly always wins over the Keychain.
+- **File writes are confined to one folder.** CSV exports and attachments can only be saved directly inside the download directory. Paths elsewhere, `..`, subfolders, symlinks and unsafe server-supplied file names are all refused. `STARLING_DOWNLOAD_DIR=off` removes the file-saving tools.
+- **Honest totals.** `list_transactions` totals count only `SETTLED` and `PENDING` items, the same as `summarise_spending`. Declined, upcoming and reversed items are reported separately under `notInTotals`.
 
 > Not affiliated with or endorsed by Starling Bank.
 
-## Privacy and safety design
+## Run locally (macOS)
 
-Your bank token can move money, so the design assumes it must never leak and that the model can be manipulated.
-
-- **Local only.** stdio transport, no HTTP listener, no telemetry, no analytics, no third-party services. The only host it ever contacts is `api.starlingbank.com` (or `api-sandbox.starlingbank.com`). That host is hard-coded, redirects are refused, and path parameters are percent-encoded.
-- **Token in the macOS Keychain.** `starling-mcp token set` reads the token at a hidden prompt (or from a pipe, e.g. `pbpaste | starling-mcp token set`), checks it with Starling, and only then stores it in the Keychain, passing it to macOS's `security` tool over a pipe. It never appears in shell history, process arguments or config files. Environment variables and a `chmod 600` file are supported as fallbacks.
-- **Read-only by default.** Write tools and payment tools are not even registered unless you opt in with `STARLING_ENABLE_WRITES` / `STARLING_ENABLE_PAYMENTS`. The token's own scopes are a second, independent limit.
-- **Human confirmation for anything risky.** Payments, standing orders, payee changes, cancelling direct debits, deleting savings spaces, personal-detail changes and token revocation all require explicit approval:
-  - With clients that support MCP *elicitation*, the client shows you a confirmation dialog directly. The model cannot answer it, which is the strongest defence against prompt injection (for example, instructions hidden in a payment reference someone sent you).
-  - Otherwise a two-step flow is used. The first call returns a preview and a one-time code, and only an identical second call with that code within 5 minutes executes. Codes are single-use and burn on any mismatch.
-- **Payments only to existing payees.** This is Starling's rule for personal tokens, and the confirmation names the payee, sort code and account number before anything is sent. An optional hard cap applies per payment (`STARLING_PAYMENT_LIMIT_MINOR_UNITS`).
-- **Request signing** for payment-class endpoints, using your own key pair. Private keys stay on disk with `0600` permissions, and the server refuses to load keys other users can read.
-- **Local audit log** of every state-changing call (no tokens), at `~/.local/state/starling-mcp/audit.log` with `0600` permissions.
-- **Rate-limit aware.** Requests are paced to Starling's 5/second limit for personal tokens. 429s are retried only when Starling says to retry soon, and writes are never blindly retried after a server error.
-- **Minimal dependencies.** Only the official MCP SDK and `zod`. HTTP, crypto and signing use Node's standard library.
-
-## Quick start
-
-Requires Node.js 22 or later.
+You need **Node.js 22 or later** (`node -v`; `brew install node` if missing) and the Xcode command line tools for `git`. There are no native modules, so nothing is compiled.
 
 ```sh
-git clone https://github.com/Zesty0wl/starling-mcp.git && cd starling-mcp
-npm ci && npm run build
-npm link            # puts `starling-mcp` on your PATH (optional)
+git clone https://github.com/Fermium/starling-mcp.git ~/src/starling-mcp
+cd ~/src/starling-mcp
+npm ci                       # installs and builds (via `prepare`); about 15 seconds
+npm test                     # optional: runs the test suite against a fake Starling API, no network
+npm link                     # puts `starling-mcp` on your PATH (or use `node dist/index.js` wherever it says starling-mcp)
+starling-mcp --help
 ```
 
-1. **Create a personal access token.** In the [Starling Developer Portal](https://developer.starlingbank.com), go to *Personal Access*, link your Starling account and create a token. Tick the scopes for the tier you want; `starling-mcp scopes` lists them. Fewer scopes means less risk. Starling refuses tokens that combine `payee:create` with the payment scopes (`pay-local:create`, `standing-order:create`). Leave out `payee:create` and add payees in the Starling app: then even a fully enabled server can only pay people you approved in the app.
-2. **Store it in the Keychain.** Run this in a terminal and paste the token; input is hidden. The token is checked with Starling before it's saved:
-   ```sh
-   starling-mcp token set
-   # or straight from the clipboard, then clear it:
-   pbpaste | starling-mcp token set && pbcopy < /dev/null
-   ```
-3. **Check everything.**
-   ```sh
-   starling-mcp doctor
-   ```
-   This shows the granted scopes, the accounts visible to the token, and any enabled tools the token's scopes don't cover.
-4. **Add it to your MCP client.**
+`npm ci` on npm 11 may print an `allow-scripts` warning about `fsevents`. It is harmless (an optional file-watcher used only by the test runner).
 
-   Claude Code (read-only):
-   ```sh
-   claude mcp add starling --scope user -- node /path/to/starling-mcp/dist/index.js
-   ```
-   Claude Code with writes and payments, a £500 per-payment cap and request signing:
-   ```sh
-   claude mcp add starling --scope user \
-     -e STARLING_ENABLE_WRITES=true -e STARLING_ENABLE_PAYMENTS=true \
-     -e STARLING_PAYMENT_LIMIT_MINOR_UNITS=50000 \
-     -e STARLING_SIGNING_KEY_UID=<api-key-uid-from-portal> \
-     -- node /path/to/starling-mcp/dist/index.js
-   ```
-   Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-   ```json
-   {
-     "mcpServers": {
-       "starling": {
-         "command": "node",
-         "args": ["/path/to/starling-mcp/dist/index.js"],
-         "env": { "STARLING_ENABLE_WRITES": "false" }
-       }
-     }
-   }
-   ```
+Before adding a real token, you can check that the server starts and lists its tools. It starts without a token, and tools that need one return a clear error:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | STARLING_ENVIRONMENT=sandbox node dist/index.js | grep -o '"readOnlyHint":true' | wc -l   # → 54 read-only tools
+```
+
+You can also run it without cloning, with `npx`. It builds from source on first run. Pin a commit so the code can't change under you:
+
+```sh
+npx -y github:Fermium/starling-mcp#<commit-sha> --help
+```
+
+Cloning is the recommended setup: you can read the code you run, and `node /absolute/path/dist/index.js` starts instantly. The first `npx` run takes about 25 seconds, which can hit an MCP client's startup timeout.
+
+## Read-only setup for a personal and a business account
+
+### 1. Create one read-only token per account
+
+In the [Starling Developer Portal](https://developer.starlingbank.com), go to *Personal Access*, link the Starling login, and create a token. Business accounts need their own token, created while linked to the business login. Tick **only `:read` scopes**. Never tick anything ending in `:create`, `:edit`, `:delete` or `:write`.
+
+| | Scopes |
+|---|---|
+| **Needed** for balances, transactions, spaces and the analysis tools | `account:read`, `balance:read`, `transaction:read`, `space:read`, `savings-goal:read` |
+| **Useful** for a finance assistant | `account-identifier:read` (sort code / IBAN), `mandate:read` (direct debits), `standing-order:read`, `payee:read`, `card:read`, `customer:read` (personal details), `account-holder-type:read`, `feed-export-csv:read` (CSV statements), `attachment:read` and `receipts:read` (receipts) |
+| **Everything else read-only** | `starling-mcp scopes` lists all 29 read scopes the server can use |
+
+`starling-mcp doctor` shows which tools the token's scopes don't cover, and warns if the token has any write scopes.
+
+### 2. Store each token in the Keychain under its own profile
+
+Run this in a terminal and paste the token when asked. Input is hidden, and the token is checked with Starling before it is saved:
+
+```sh
+starling-mcp token set --profile personal
+starling-mcp token set --profile business
+# or from the clipboard: pbpaste | starling-mcp token set --profile business && pbcopy < /dev/null
+
+starling-mcp doctor --profile personal
+starling-mcp doctor --profile business
+```
+
+Profiles are stored in the Keychain as service `starling-mcp`, account `access-token-production-<profile>`. A server entry with a profile only ever reads its own item and never falls back to another one.
+
+If you'd rather use a file than the Keychain, put the token in a file only you can read (`chmod 600`; the server refuses files that other users can read) and set `STARLING_ACCESS_TOKEN_FILE`.
+
+### 3. Add two MCP server entries
+
+Claude Code, one command per account:
+
+```sh
+claude mcp add starling-personal --scope user -e STARLING_PROFILE=personal -- node ~/src/starling-mcp/dist/index.js
+claude mcp add starling-business --scope user -e STARLING_PROFILE=business -- node ~/src/starling-mcp/dist/index.js
+```
+
+Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`) or any other MCP client. Use absolute paths: `~` is not expanded in `args`, and GUI apps don't see your shell's `PATH`. Put the output of `which node` (e.g. `/opt/homebrew/bin/node`) in `command` if `node` isn't found or an old version is picked up:
+
+```json
+{
+  "mcpServers": {
+    "starling-personal": {
+      "command": "node",
+      "args": ["/Users/you/src/starling-mcp/dist/index.js"],
+      "env": { "STARLING_PROFILE": "personal" }
+    },
+    "starling-business": {
+      "command": "node",
+      "args": ["/Users/you/src/starling-mcp/dist/index.js"],
+      "env": { "STARLING_PROFILE": "business" }
+    }
+  }
+}
+```
+
+Using token files instead of the Keychain (e.g. on Linux):
+
+```json
+"starling-business": {
+  "command": "node",
+  "args": ["/home/you/starling-mcp/dist/index.js"],
+  "env": { "STARLING_PROFILE": "business", "STARLING_ACCESS_TOKEN_FILE": "/home/you/.config/starling-mcp/business.token" }
+}
+```
+
+Set token variables (`STARLING_ACCESS_TOKEN`, `STARLING_ACCESS_TOKEN_FILE`) only in a server entry's `env`, never globally in your shell profile. They take precedence over the Keychain, so a globally exported token would be used by *both* entries. `starling-mcp doctor --profile <name>` and the `get_server_status` tool show where each entry's token comes from.
+
+Each entry announces its profile to the assistant (server name `starling-<profile>`, plus a line in its instructions), so figures from the two accounts are not mixed up. Exports go to `~/Downloads/starling-mcp/<profile>/`. macOS may ask once whether the MCP client (or Terminal) may access Downloads; if you'd rather avoid that, set `STARLING_DOWNLOAD_DIR` to a folder outside Downloads, Documents and Desktop, or to `off`.
+
+A single account works the same way without `STARLING_PROFILE` (`starling-mcp token set`, then `claude mcp add starling --scope user -- node ~/src/starling-mcp/dist/index.js`).
 
 ### Docker
 
-A `Dockerfile` is included for MCP hosts and directories that run servers in containers. The macOS Keychain isn't available inside a container, so pass the token with `STARLING_ACCESS_TOKEN` (or mount a `chmod 600` file and set `STARLING_ACCESS_TOKEN_FILE`):
+A `Dockerfile` is included for MCP hosts and directories that run servers in containers. The macOS Keychain isn't available inside a container, so mount a `chmod 600` token file and set `STARLING_ACCESS_TOKEN_FILE` (or pass `STARLING_ACCESS_TOKEN`):
 
 ```sh
 docker build -t starling-mcp .
@@ -88,25 +133,55 @@ docker run --rm -i -e STARLING_ACCESS_TOKEN starling-mcp
 
 On a Mac, running it natively is more private, because the token stays in the Keychain.
 
+## Privacy and safety design
+
+Your bank token can move money, so the design assumes it must never leak and that the model can be manipulated.
+
+- **Local only.** stdio transport, no HTTP listener, no telemetry, no analytics, no third-party services. The only host it ever contacts is `api.starlingbank.com` (or `api-sandbox.starlingbank.com`). That host is hard-coded, redirects are refused, and path parameters are percent-encoded.
+- **Token in the macOS Keychain.** `starling-mcp token set` reads the token at a hidden prompt (or from a pipe, e.g. `pbpaste | starling-mcp token set`), checks it with Starling, and only then stores it in the Keychain, passing it to macOS's `security` tool over a pipe. It never appears in shell history, process arguments or config files. Environment variables and a `chmod 600` file are supported as fallbacks.
+- **Read-only by default.** Write tools and payment tools are not even registered unless you opt in with `STARLING_ENABLE_WRITES` / `STARLING_ENABLE_PAYMENTS` (this fork never does). The token's own scopes are a second, independent limit.
+- **Human confirmation for anything risky.** Payments, standing orders, payee changes, cancelling direct debits, deleting savings spaces, personal-detail changes and token revocation all require explicit approval:
+  - With clients that support MCP *elicitation*, the client shows you a confirmation dialog directly. The model cannot answer it, which is the strongest defence against prompt injection (for example, instructions hidden in a payment reference someone sent you).
+  - Otherwise a two-step flow is used. The first call returns a preview and a one-time code, and only an identical second call with that code within 5 minutes executes. Codes are single-use and burn on any mismatch.
+- **Payments only to existing payees.** This is Starling's rule for personal tokens, and the confirmation names the payee, sort code and account number before anything is sent. An optional hard cap applies per payment (`STARLING_PAYMENT_LIMIT_MINOR_UNITS`).
+- **Request signing** for payment-class endpoints, using your own key pair. Private keys stay on disk with `0600` permissions, and the server refuses to load keys other users can read.
+- **Local audit log** of every state-changing call (no tokens), at `~/.local/state/starling-mcp/audit.log` with `0600` permissions.
+- **Rate-limit aware.** Requests are paced to Starling's 5/second limit for personal tokens. 429s are retried only when Starling says to retry soon, and writes are never blindly retried after a server error.
+- **Minimal dependencies.** Only the official MCP SDK and `zod`. HTTP, crypto and signing use Node's standard library.
+- **Files go to one folder only.** Tools can only write directly inside `STARLING_DOWNLOAD_DIR`: no other absolute paths, no `..`, no subfolders. Files are created with `O_EXCL | O_NOFOLLOW` and `0600`, so nothing is overwritten and no symlink is followed. File names suggested by Starling are used only if they are a plain name. `STARLING_DOWNLOAD_DIR=off` removes the file-saving tools.
+
 ## Configuration
 
 All configuration is through environment variables. None of them hold secrets except the token fallbacks.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `STARLING_PROFILE` | none | Name for this server entry, e.g. `personal` or `business`. Selects the Keychain item `access-token-<environment>-<profile>` and the download folder. Letters, digits, `.`, `_`, `-`. |
+| `STARLING_KEYCHAIN_ACCOUNT` | `access-token-<environment>[-<profile>]` | Override the Keychain account name directly. |
+| `STARLING_ACCESS_TOKEN_FILE` | none | Path to a file containing the token (must not be readable by other users: `chmod 600`). Takes precedence over the Keychain. If set, it must work; there is no silent fallback. |
+| `STARLING_ACCESS_TOKEN` | none | Token in the environment. Takes precedence over the Keychain. Avoid it if you can, because environment variables are easy to leak. |
 | `STARLING_ENVIRONMENT` | `production` | `production` or `sandbox`. |
+| `STARLING_DOWNLOAD_DIR` | `~/Downloads/starling-mcp/<profile or "default">` | The only folder files are ever written to (CSV exports, attachments, images with `saveAs`). `off` removes `export_transactions_csv` and `download_transaction_attachment` and disables `saveAs`. |
+| `STARLING_DEFAULT_ACCOUNT_UID` | none | Account used when a tool's `accountUid` is omitted (otherwise the only account, or the `PRIMARY` one). |
+| `STARLING_AUDIT_LOG` | `~/.local/state/starling-mcp/audit.log` | Path, or `off`. Only state-changing calls are logged, so it stays empty when read-only. |
+| `STARLING_REQUESTS_PER_SECOND` | `5` | Client-side pacing. |
+
+Token lookup order: `STARLING_ACCESS_TOKEN_FILE`, then `STARLING_ACCESS_TOKEN`, then the Keychain item for this entry's profile.
+
+### Write and payment settings (not used by this fork)
+
+These are kept from upstream. Leave them unset for read-only use.
+
+| Variable | Default | Purpose |
+|---|---|---|
 | `STARLING_ENABLE_WRITES` | `false` | Registers tools that change things: notes, categories, receipts, attachments, card controls, savings spaces, round-ups, direct-debit cancellation, profile and contact details. |
 | `STARLING_ENABLE_PAYMENTS` | `false` | Also registers payments, standing orders and payee management. Requires writes. |
 | `STARLING_PAYMENT_LIMIT_MINOR_UNITS` | none | Maximum amount per payment or standing order, in pence (`50000` = £500). |
 | `STARLING_CONFIRMATION` | `auto` | `auto` uses elicitation when the client supports it and falls back to codes otherwise. `elicit` requires elicitation and refuses otherwise. `token` always uses codes. |
 | `STARLING_SIGNING_KEY_UID` | none | UID of your uploaded API signing key; enables signed endpoints. |
 | `STARLING_SIGNING_KEY_PATH` | `~/.config/starling-mcp/keys/starling-api-private.key` | Private key used for signing. |
-| `STARLING_DEFAULT_ACCOUNT_UID` | none | Account used when a tool's `accountUid` is omitted (otherwise the only account, or the `PRIMARY` one). |
-| `STARLING_AUDIT_LOG` | `~/.local/state/starling-mcp/audit.log` | Path, or `off`. |
-| `STARLING_DOWNLOAD_DIR` | `~/Downloads/starling` | Where CSV exports and attachments are saved. |
-| `STARLING_REQUESTS_PER_SECOND` | `5` | Client-side pacing. |
-| `STARLING_ACCESS_TOKEN_FILE` | none | Fallback: path to a file containing the token (must be `chmod 600`). |
-| `STARLING_ACCESS_TOKEN` | none | Last-resort fallback. Avoid this, because environment variables are easy to leak. |
+
+Upstream's write-enabled setup, for reference only: `claude mcp add starling --scope user -e STARLING_ENABLE_WRITES=true -e STARLING_ENABLE_PAYMENTS=true -e STARLING_PAYMENT_LIMIT_MINOR_UNITS=50000 -e STARLING_SIGNING_KEY_UID=<uid> -- node /path/to/dist/index.js`. With payments, Starling refuses tokens that combine `payee:create` with `pay-local:create` / `standing-order:create`.
 
 ## Request signing (payments, standing orders, email and address changes)
 

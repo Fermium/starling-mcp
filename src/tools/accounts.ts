@@ -41,7 +41,14 @@ export const accountTools = [
         confirmationMode: ctx.confirmer.mode,
         clientSupportsElicitation: ctx.confirmer.elicitationSupported(),
         auditLog: ctx.config.auditLogPath ?? "disabled",
-        downloadDirectory: ctx.config.downloadDir,
+        profile: ctx.config.profile ?? "default",
+        keychainAccount: ctx.config.keychainAccount,
+        tokenFrom: process.env.STARLING_ACCESS_TOKEN_FILE?.trim()
+          ? "STARLING_ACCESS_TOKEN_FILE"
+          : process.env.STARLING_ACCESS_TOKEN?.trim()
+            ? "STARLING_ACCESS_TOKEN"
+            : "keychain",
+        downloadDirectory: ctx.config.downloadDir ?? "disabled (STARLING_DOWNLOAD_DIR=off)",
         requestsMadeTodayByThisProcess: ctx.client.requestsToday,
       });
     },
@@ -166,6 +173,7 @@ export const accountTools = [
     tier: "read",
     operations: ["downloadCSVFeedExportForDateRange"],
     readOnly: true,
+    writesFiles: true,
     input: {
       accountUid,
       start: date("First day to include"),
@@ -173,9 +181,7 @@ export const accountTools = [
       saveAs: z
         .string()
         .optional()
-        .describe(
-          "File name or absolute path. Relative names go in the download directory (default ~/Downloads/starling)",
-        ),
+        .describe("Plain file name (no folders). Always saved in the download directory; see get_server_status"),
       inline: z.boolean().optional().describe("Also return the CSV contents in the response (default false)"),
     },
     async run(args, ctx) {

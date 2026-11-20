@@ -30,6 +30,28 @@ export interface BinaryResponse {
   filename: string | undefined;
 }
 
+/** Percent-decodes a header value; a malformed one (e.g. "100% receipt.pdf") is kept as-is. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Retry-After is either a number of seconds or an HTTP date (RFC 9110).
+ * Returns seconds to wait, or NaN if the header cannot be understood.
+ */
+export function retryAfterSeconds(header: string | null, now = Date.now()): number {
+  const value = header?.trim();
+  if (!value) return 1;
+  if (/^\d+(\.\d+)?$/.test(value)) return Number(value);
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return Number.NaN;
+  return Math.max(0, Math.ceil((at - now) / 1000));
+}
+
 export class StarlingApiError extends Error {
   constructor(
     readonly status: number,
@@ -43,7 +65,7 @@ export class StarlingApiError extends Error {
   private static describe(status: number, details: string[], operation: string): string {
     const hints: Record<number, string> = {
       400: "Starling rejected the request as invalid.",
-      401: "The access token is invalid or has expired. Create a new one and store it with `starling-mcp token set`.",
+      401: "The access token is invalid or has expired. Create a new one and store it with `starling-mcp token set` (plus `--profile <name>` if this server entry uses a profile).",
       403: "Forbidden. Usually the token lacks the scope this endpoint needs (call get_token_identity to see granted scopes), or the data is outside the 90-day consent window.",
       404: "Not found. Check the UIDs, and that this resource exists for this account holder type.",
       429: "Rate limited by Starling (personal tokens allow 5 requests/second and 1,000/day).",
@@ -149,7 +171,7 @@ export class StarlingClient {
     return {
       data,
       contentType: (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim(),
-      filename: filename ? decodeURIComponent(filename) : undefined,
+      filename: filename ? safeDecode(filename) : undefined,
     };
   }
 
@@ -219,7 +241,7 @@ export class StarlingClient {
 
       // A 429 means Starling did not process the request, so retrying is safe for any method.
       if (res.status === 429 && attempt < 2) {
-        const retryAfter = Number(res.headers.get("retry-after") ?? "1");
+        const retryAfter = retryAfterSeconds(res.headers.get("retry-after"));
         if (Number.isFinite(retryAfter) && retryAfter <= MAX_RETRY_AFTER_SECONDS) {
           await res.body?.cancel();
           await sleep(Math.max(retryAfter, 1) * 1000);

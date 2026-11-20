@@ -5,7 +5,7 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
@@ -13,8 +13,8 @@ RUN npm run build && npm prune --omit=dev
 FROM node:22-bookworm-slim
 LABEL org.opencontainers.image.title="starling-mcp" \
       org.opencontainers.image.description="Privacy-first MCP server for the Starling Bank public API" \
-      org.opencontainers.image.source="https://github.com/Zesty0wl/starling-mcp" \
-      org.opencontainers.image.documentation="https://github.com/Zesty0wl/starling-mcp#readme" \
+      org.opencontainers.image.source="https://github.com/Fermium/starling-mcp" \
+      org.opencontainers.image.documentation="https://github.com/Fermium/starling-mcp#readme" \
       org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 ENV NODE_ENV=production

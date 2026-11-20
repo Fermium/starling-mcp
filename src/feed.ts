@@ -93,6 +93,26 @@ export function toTimestamp(value: string, endOfDay = false): string {
 }
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** The same instant one calendar year later (handles leap years). */
+function oneYearAfter(timestamp: string): number {
+  const d = new Date(timestamp);
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d.getTime();
+}
+
+/**
+ * Starling rejects some feed queries spanning more than a year with an
+ * unhelpful 400; check first and say what to do instead.
+ */
+export function assertWithinOneYear(from: string, to: string, what: string, hint: string): void {
+  if (Date.parse(to) < Date.parse(from)) throw new Error(`${what}: the end (${to}) is before the start (${from}).`);
+  if (Date.parse(to) > oneYearAfter(from)) {
+    throw new Error(
+      `${what} can cover at most one year (${from.slice(0, 10)} to ${to.slice(0, 10)} is longer). ${hint}`,
+    );
+  }
+}
 const MAX_PAGES = 50;
 
 /**
@@ -182,6 +202,13 @@ export function filterFeed(items: FeedItem[], f: FeedFilter): FeedItem[] {
 export function sortNewestFirst(items: FeedItem[]): FeedItem[] {
   return [...items].sort((a, b) => Date.parse(b.transactionTime) - Date.parse(a.transactionTime));
 }
+
+/**
+ * Statuses that represent money that actually moved (or is about to, for
+ * PENDING card payments). DECLINED, UPCOMING, REVERSED, etc. are left out of
+ * totals so they do not inflate spending.
+ */
+export const COUNTED_STATUSES = ["SETTLED", "PENDING"];
 
 /** Signed totals per currency: money in, money out, net. */
 export function totals(items: FeedItem[]): Record<string, { in: number; out: number; net: number; count: number }> {

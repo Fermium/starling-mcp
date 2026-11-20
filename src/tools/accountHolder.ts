@@ -104,7 +104,10 @@ export const accountHolderTools = [
     readOnly: true,
     input: {
       accountHolderUid: uid("Account holder UID (optional; looked up automatically)").optional(),
-      saveAs: z.string().optional().describe("Also save to this file name or absolute path"),
+      saveAs: z
+        .string()
+        .optional()
+        .describe("Also save to this plain file name in the download directory (no folders)"),
     },
     async run(args, ctx) {
       const accountHolderUid = await holderUid(ctx, args.accountHolderUid);

@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- Profiles (`STARLING_PROFILE`, `--profile <name>`) so one install can run as several MCP server entries, e.g. a personal and a business account. Each profile has its own Keychain item (`access-token-<env>-<profile>`, or `STARLING_KEYCHAIN_ACCOUNT`), its own download folder, and announces itself to the model.
+- `doctor` and `token set` warn when a token has write scopes.
+
 ### Changed
+- Breaking: token lookup order is now `STARLING_ACCESS_TOKEN_FILE`, then `STARLING_ACCESS_TOKEN`, then the Keychain, so an explicit setting is never silently overridden by a Keychain item. A configured token file that is missing, empty or readable by others is an error instead of a fallthrough.
+- Breaking: files are only ever written directly inside `STARLING_DOWNLOAD_DIR` (new default `~/Downloads/starling-mcp/<profile>`). Other absolute paths, `..`, subfolders and unsafe server-supplied names are refused; files open with `O_EXCL | O_NOFOLLOW`. `STARLING_DOWNLOAD_DIR=off` removes the file-saving tools.
+- `list_transactions` totals count only SETTLED and PENDING items, like `summarise_spending`; other matched statuses are totalled separately under `notInTotals`.
+- `Retry-After` given as an HTTP date is understood.
+- `list_settled_transactions` and `get_feed_changes_since` check Starling's one-year limit before calling the API and explain how to proceed.
+- `npm install` from git builds automatically (`prepare` script), so `npx github:Fermium/starling-mcp#<sha>` works.
+- zod updated to 4.6.7 and transitive dependencies updated (`npm audit` clean).
 - npm package name is now `@zesty0wl/starling-mcp`, so directories no longer link to an unrelated package that already uses the name `starling-mcp`. The command is still `starling-mcp`.
 
 ## [0.1.0] - 2026-10-15
