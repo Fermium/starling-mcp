@@ -117,6 +117,31 @@ describe("server-supplied file names", () => {
     expect(readdirSync(outside)).toEqual([]);
   });
 
+  it("download_transaction_attachment keeps a name with a stray % instead of failing", async () => {
+    const { fetchImpl } = fakeStarling({
+      ...ACCOUNTS_ROUTE,
+      "GET /api/v2/feed/account/{a}/category/{c}/{f}/attachments/{x}": () => ({
+        text: "%PDF-1.4",
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": 'attachment; filename="100% receipt.pdf"',
+        },
+      }),
+    });
+    const client = await connect(testConfig({ STARLING_DOWNLOAD_DIR: dir }), fetchImpl);
+    const res = await client.callTool({
+      name: "download_transaction_attachment",
+      arguments: {
+        accountUid: ACCOUNT,
+        categoryUid: CATEGORY,
+        feedItemUid: "66666666-6666-4666-8666-666666666666",
+        feedItemAttachmentUid: "55555555-5555-4555-8555-555555555555",
+      },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toContain(join(dir, "100% receipt.pdf"));
+  });
+
   it("export_transactions_csv refuses a saveAs outside the download directory", async () => {
     const { fetchImpl } = fakeStarling({
       ...ACCOUNTS_ROUTE,

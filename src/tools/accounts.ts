@@ -42,6 +42,12 @@ export const accountTools = [
         clientSupportsElicitation: ctx.confirmer.elicitationSupported(),
         auditLog: ctx.config.auditLogPath ?? "disabled",
         profile: ctx.config.profile ?? "default",
+        keychainAccount: ctx.config.keychainAccount,
+        tokenFrom: process.env.STARLING_ACCESS_TOKEN_FILE?.trim()
+          ? "STARLING_ACCESS_TOKEN_FILE"
+          : process.env.STARLING_ACCESS_TOKEN?.trim()
+            ? "STARLING_ACCESS_TOKEN"
+            : "keychain",
         downloadDirectory: ctx.config.downloadDir ?? "disabled (STARLING_DOWNLOAD_DIR=off)",
         requestsMadeTodayByThisProcess: ctx.client.requestsToday,
       });

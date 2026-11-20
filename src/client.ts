@@ -30,6 +30,15 @@ export interface BinaryResponse {
   filename: string | undefined;
 }
 
+/** Percent-decodes a header value; a malformed one (e.g. "100% receipt.pdf") is kept as-is. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /**
  * Retry-After is either a number of seconds or an HTTP date (RFC 9110).
  * Returns seconds to wait, or NaN if the header cannot be understood.
@@ -162,7 +171,7 @@ export class StarlingClient {
     return {
       data,
       contentType: (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim(),
-      filename: filename ? decodeURIComponent(filename) : undefined,
+      filename: filename ? safeDecode(filename) : undefined,
     };
   }
 

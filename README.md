@@ -22,10 +22,13 @@ You need **Node.js 22 or later** (`node -v`; `brew install node` if missing) and
 ```sh
 git clone https://github.com/Fermium/starling-mcp.git ~/src/starling-mcp
 cd ~/src/starling-mcp
-npm ci && npm run build      # about 15 seconds; `npm test` runs the test suite (no network)
-npm link                     # optional: puts `starling-mcp` on your PATH
-node dist/index.js --help    # or `starling-mcp --help` after npm link
+npm ci                       # installs and builds (via `prepare`); about 15 seconds
+npm test                     # optional: runs the test suite against a fake Starling API, no network
+npm link                     # puts `starling-mcp` on your PATH (or use `node dist/index.js` wherever it says starling-mcp)
+starling-mcp --help
 ```
+
+`npm ci` on npm 11 may print an `allow-scripts` warning about `fsevents`. It is harmless (an optional file-watcher used only by the test runner).
 
 Before adding a real token, you can check that the server starts and lists its tools. It starts without a token, and tools that need one return a clear error:
 
@@ -42,7 +45,7 @@ You can also run it without cloning, with `npx`. It builds from source on first 
 npx -y github:Fermium/starling-mcp#<commit-sha> --help
 ```
 
-Cloning is the recommended setup: you can read the code you run, and `node /absolute/path/dist/index.js` starts instantly.
+Cloning is the recommended setup: you can read the code you run, and `node /absolute/path/dist/index.js` starts instantly. The first `npx` run takes about 25 seconds, which can hit an MCP client's startup timeout.
 
 ## Read-only setup for a personal and a business account
 
@@ -84,7 +87,7 @@ claude mcp add starling-personal --scope user -e STARLING_PROFILE=personal -- no
 claude mcp add starling-business --scope user -e STARLING_PROFILE=business -- node ~/src/starling-mcp/dist/index.js
 ```
 
-Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`) or any other MCP client. Use absolute paths, because `~` is not expanded in `args`:
+Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`) or any other MCP client. Use absolute paths: `~` is not expanded in `args`, and GUI apps don't see your shell's `PATH`. Put the output of `which node` (e.g. `/opt/homebrew/bin/node`) in `command` if `node` isn't found or an old version is picked up:
 
 ```json
 {
@@ -113,7 +116,9 @@ Using token files instead of the Keychain (e.g. on Linux):
 }
 ```
 
-Each entry announces its profile to the assistant (server name `starling-<profile>`, plus a line in its instructions), so figures from the two accounts are not mixed up. Exports go to `~/Downloads/starling-mcp/<profile>/`.
+Set token variables (`STARLING_ACCESS_TOKEN`, `STARLING_ACCESS_TOKEN_FILE`) only in a server entry's `env`, never globally in your shell profile. They take precedence over the Keychain, so a globally exported token would be used by *both* entries. `starling-mcp doctor --profile <name>` and the `get_server_status` tool show where each entry's token comes from.
+
+Each entry announces its profile to the assistant (server name `starling-<profile>`, plus a line in its instructions), so figures from the two accounts are not mixed up. Exports go to `~/Downloads/starling-mcp/<profile>/`. macOS may ask once whether the MCP client (or Terminal) may access Downloads; if you'd rather avoid that, set `STARLING_DOWNLOAD_DIR` to a folder outside Downloads, Documents and Desktop, or to `off`.
 
 A single account works the same way without `STARLING_PROFILE` (`starling-mcp token set`, then `claude mcp add starling --scope user -- node ~/src/starling-mcp/dist/index.js`).
 
