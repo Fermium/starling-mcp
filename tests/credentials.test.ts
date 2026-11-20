@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { loadAccessToken } from "../src/credentials.js";
+import { loadAccessToken, renameToken } from "../src/credentials.js";
 
 const dir = mkdtempSync(join(tmpdir(), "starling-cred-"));
 function tokenFile(name: string, content: string, mode = 0o600): string {
@@ -88,5 +88,48 @@ describe("loadAccessToken", () => {
       ).rejects.toThrow(/chmod 600/);
     }
     expect(kc.asked).toEqual([]);
+  });
+});
+
+describe("renameToken", () => {
+  function memoryKeychain(items: Record<string, string>) {
+    return {
+      items,
+      read: async (a: string) => items[a],
+      store: async (w: { keychainAccount: string }, t: string) => {
+        items[w.keychainAccount] = t;
+      },
+      remove: async (w: { keychainAccount: string }) => delete items[w.keychainAccount],
+    };
+  }
+  const personal = loadConfig({ STARLING_PROFILE: "personal" });
+  const main = loadConfig({ STARLING_PROFILE: "main" });
+
+  it("moves a token to a new profile and removes the old item", async () => {
+    const kc = memoryKeychain({ "access-token-production-personal": "tok" });
+    expect(await renameToken(personal, main, {}, kc)).toEqual({ removedOld: true });
+    expect(kc.items).toEqual({ "access-token-production-main": "tok" });
+  });
+
+  it("copies with keep, and refuses to overwrite without force", async () => {
+    const kc = memoryKeychain({ "access-token-production-personal": "tok", "access-token-production-main": "other" });
+    await expect(renameToken(personal, main, {}, kc)).rejects.toThrow(/already stored.*--force/);
+    expect(kc.items["access-token-production-main"]).toBe("other");
+    await renameToken(personal, main, { keep: true, force: true }, kc);
+    expect(kc.items).toEqual({ "access-token-production-personal": "tok", "access-token-production-main": "tok" });
+  });
+
+  it("fails cleanly when there is nothing to move, and never puts the token in errors", async () => {
+    const kc = memoryKeychain({});
+    await expect(renameToken(personal, main, {}, kc)).rejects.toThrow(/No token found.*personal/);
+    const broken = { ...memoryKeychain({ "access-token-production-personal": "secret-tok" }), store: async () => {} };
+    const err = await renameToken(personal, main, {}, broken).catch((e: Error) => e);
+    expect(String(err)).toMatch(/original was left in place/);
+    expect(String(err)).not.toContain("secret-tok");
+    expect(await broken.read("access-token-production-personal")).toBe("secret-tok");
+  });
+
+  it("refuses the same source and destination", async () => {
+    await expect(renameToken(main, main, {}, memoryKeychain({}))).rejects.toThrow(/both the source/);
   });
 });

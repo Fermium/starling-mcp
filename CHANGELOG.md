@@ -7,8 +7,11 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 - Profiles (`STARLING_PROFILE`, `--profile <name>`) so one install can run as several MCP server entries, e.g. a personal and a business account. Each profile has its own Keychain item (`access-token-<env>-<profile>`, or `STARLING_KEYCHAIN_ACCOUNT`), its own download folder, and announces itself to the model.
 - `doctor` and `token set` warn when a token has write scopes.
+- `token rename --from <profile> --to <profile>` (and `token copy`, which keeps the original) move a stored Keychain token between profiles without re-entering it. The token is never printed, and the new item is verified before the old one is removed. `--force` replaces an existing destination.
+- `doctor` shows the account holder (type, name, UID) and every account the token can see, with account UIDs, and explains that a token covers exactly one account holder. Business, sole-trader and joint accounts need their own token and profile, because Starling's API ties each token to a single account holder.
 
 ### Changed
+- Keychain errors from `security` have the token redacted before they are shown.
 - Breaking: token lookup order is now `STARLING_ACCESS_TOKEN_FILE`, then `STARLING_ACCESS_TOKEN`, then the Keychain, so an explicit setting is never silently overridden by a Keychain item. A configured token file that is missing, empty or readable by others is an error instead of a fallthrough.
 - Breaking: files are only ever written directly inside `STARLING_DOWNLOAD_DIR` (new default `~/Downloads/starling-mcp/<profile>`). Other absolute paths, `..`, subfolders and unsafe server-supplied names are refused; files open with `O_EXCL | O_NOFOLLOW`. `STARLING_DOWNLOAD_DIR=off` removes the file-saving tools.
 - `list_transactions` totals count only SETTLED and PENDING items, like `summarise_spending`; other matched statuses are totalled separately under `notInTotals`.
