@@ -37,6 +37,8 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   /** Adds the optional confirmationCode argument and requires human confirmation. */
   confirm?: boolean;
   readOnly?: boolean;
+  /** Only registered when a download directory is configured (the tool's main job is saving a file). */
+  writesFiles?: boolean;
   destructive?: boolean;
   idempotent?: boolean;
   input: S;

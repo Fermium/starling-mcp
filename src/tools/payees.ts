@@ -145,7 +145,13 @@ export const payeeTools = [
     tier: "read",
     operations: ["servePayeeImageFile"],
     readOnly: true,
-    input: { payeeUid: uid("Payee UID"), saveAs: z.string().optional().describe("Also save to this file") },
+    input: {
+      payeeUid: uid("Payee UID"),
+      saveAs: z
+        .string()
+        .optional()
+        .describe("Also save to this plain file name in the download directory (no folders)"),
+    },
     async run(args, ctx) {
       const img = await orNotFound(
         ctx.client.binary({

@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { type FeedItem, fetchFeedBetween, filterFeed, isInternalTransfer, toTimestamp } from "../feed.js";
+import {
+  COUNTED_STATUSES,
+  type FeedItem,
+  fetchFeedBetween,
+  filterFeed,
+  isInternalTransfer,
+  toTimestamp,
+} from "../feed.js";
 import { formatMoney } from "../money.js";
 import { SPENDING_CATEGORIES } from "../spendingCategories.js";
 import { accountUid, categoryUid, dateTime } from "./schemas.js";
@@ -8,7 +15,6 @@ import { defineTool, json } from "./types.js";
 type Amount = { currency: string; minorUnits: number };
 
 const DAY = 86400_000;
-const COUNTED_STATUSES = ["SETTLED", "PENDING"];
 
 function startOfMonth(): string {
   const d = new Date();

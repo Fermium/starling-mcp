@@ -5,10 +5,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StarlingClient } from "./client.js";
-import { type AccessTier, CONFIG_DIR, type Config, type Environment, loadConfig, tierAllows } from "./config.js";
+import { type AccessTier, CONFIG_DIR, type Config, loadConfig, tierAllows } from "./config.js";
 import { assertPrivateFile, deleteToken, loadAccessToken, readHidden, storeToken } from "./credentials.js";
 import { OPERATIONS } from "./operations.js";
-import { createServer, registeredToolCount, VERSION } from "./server.js";
+import { createServer, registeredToolCount, toolEnabled, VERSION } from "./server.js";
 import { loadSigner, type RequestSigner } from "./signing.js";
 import { consentNote } from "./tools/accounts.js";
 import { ALL_TOOLS } from "./tools/index.js";
@@ -28,7 +28,7 @@ function loadSignerIfConfigured(config: Config): RequestSigner | undefined {
 }
 
 async function makeClient(config: Config) {
-  const { token, source } = await loadAccessToken(config.environment);
+  const { token, source } = await loadAccessToken(config);
   return { client: new StarlingClient(config, token, loadSignerIfConfigured(config)), source };
 }
 
@@ -37,13 +37,13 @@ async function serve(): Promise<void> {
   // The token is loaded on first use, so the server starts (and explains how to add a token) even before one is stored.
   const client = new StarlingClient(
     config,
-    async () => (await loadAccessToken(config.environment)).token,
+    async () => (await loadAccessToken(config)).token,
     loadSignerIfConfigured(config),
   );
   const server = createServer(config, client);
   await server.connect(new StdioServerTransport());
   log(
-    `starling-mcp ${VERSION}: ${config.environment}, tier=${config.tier}, ${registeredToolCount(config)} tools, ` +
+    `starling-mcp ${VERSION}: ${config.environment}${config.profile ? ` (profile ${config.profile})` : ""}, tier=${config.tier}, ${registeredToolCount(config)} tools, ` +
       `signing ${client.canSign ? "on" : "off"}`,
   );
 }
@@ -76,6 +76,8 @@ function printScopes(): void {
 async function doctor(): Promise<void> {
   const config = loadConfig();
   console.log(`Environment:   ${config.environment} (${config.baseUrl})`);
+  console.log(`Profile:       ${config.profile ?? "(none)"}  [Keychain account: ${config.keychainAccount}]`);
+  console.log(`Downloads:     ${config.downloadDir ?? "disabled (file-saving tools not registered)"}`);
   console.log(`Access tier:   ${config.tier} (${registeredToolCount(config)} tools)`);
   console.log(`Confirmation:  ${config.confirmation}`);
   console.log(`Payment limit: ${config.paymentLimitMinorUnits ?? "none"}`);
@@ -107,6 +109,12 @@ async function doctor(): Promise<void> {
   const note = consentNote(identity.consentExpiresAt);
   if (note) console.log(`Consent:       ${note}`);
   console.log(`Granted scopes (${granted.size}): ${[...granted].sort().join(", ")}`);
+  const writeScopes = [...granted].filter((sc) => !sc.endsWith(":read")).sort();
+  if (writeScopes.length) {
+    console.log(
+      `Write scopes:  ${writeScopes.join(", ")}\n               The server stays read-only unless STARLING_ENABLE_WRITES is set, but a read-only token is safer.`,
+    );
+  }
 
   const accounts = await client.json<{ accounts?: { name: string; currency: string; accountType: string }[] }>({
     method: "GET",
@@ -118,7 +126,7 @@ async function doctor(): Promise<void> {
 
   const blocked: string[] = [];
   for (const tool of ALL_TOOLS) {
-    if (!tierAllows(config, tool.tier)) continue;
+    if (!toolEnabled(config, tool)) continue;
     const missing = new Set<string>();
     for (const op of tool.operations) {
       const needed = OPERATIONS[op]?.scopes ?? [];
@@ -181,46 +189,70 @@ function usage(): void {
 
 Usage:
   starling-mcp                         Run the MCP server on stdio (what MCP clients launch)
-  starling-mcp token set [--sandbox]   Check a personal access token and store it in the macOS Keychain (hidden prompt,
-                                       or pipe it: pbpaste | starling-mcp token set)
-  starling-mcp token delete [--sandbox]
-  starling-mcp doctor                  Check configuration, token scopes and account access
+  starling-mcp token set [--sandbox] [--profile <name>]
+                                       Check a personal access token and store it in the macOS Keychain (hidden prompt,
+                                       or pipe it: pbpaste | starling-mcp token set --profile personal)
+  starling-mcp token delete [--sandbox] [--profile <name>]
+  starling-mcp doctor [--profile <name>]
+                                       Check configuration, token scopes and account access
   starling-mcp scopes                  List the token scopes each access tier needs
   starling-mcp keys generate [--force] Create request-signing key pairs in ${KEY_DIR}
   starling-mcp keys rotation-signature <new-public-key.pem> <rotation-key-uid>
 
+--profile <name> is the same as STARLING_PROFILE=<name>: one Keychain item (and download folder) per
+Starling login, so personal and business accounts can run as two MCP server entries.
 Configuration is by environment variable; see README.md.`);
 }
 
-async function main(argv: string[]): Promise<void> {
+async function main(args: string[]): Promise<void> {
+  let argv = args;
+  const profileAt = argv.indexOf("--profile");
+  if (profileAt >= 0) {
+    const name = argv[profileAt + 1];
+    if (!name || name.startsWith("--")) throw new Error("--profile needs a name, e.g. --profile business");
+    process.env.STARLING_PROFILE = name;
+    argv = [...argv.slice(0, profileAt), ...argv.slice(profileAt + 2)];
+  }
+  if (argv.includes("--sandbox")) process.env.STARLING_ENVIRONMENT = "sandbox";
   const [cmd, sub, ...rest] = argv;
-  const env: Environment = argv.includes("--sandbox") ? "sandbox" : "production";
   switch (cmd) {
     case undefined:
     case "serve":
       return serve();
     case "token":
       if (sub === "set") {
+        const config = loadConfig();
+        const who = `${config.environment}${config.profile ? ` "${config.profile}"` : ""}`;
         const token = await readHidden(
-          `Paste your Starling ${env} personal access token (hidden), then press Return: `,
+          `Paste your Starling ${who} personal access token (hidden), then press Return: `,
         );
         if (!token) throw new Error("No token entered.");
         console.log(`Received ${token.length} characters. Checking it with Starling…`);
-        process.env.STARLING_ENVIRONMENT = env;
-        const client = new StarlingClient(loadConfig(), token, undefined);
+        const client = new StarlingClient(config, token, undefined);
         const id = await client.json<{ scopes?: string[]; expiresAt?: string }>({
           method: "GET",
           path: "/api/v2/identity/token",
         });
-        await storeToken(env, token);
+        await storeToken(config, token);
         console.log(
-          `Token OK and saved to the macOS Keychain. ${id.scopes?.length ?? 0} scopes granted; expires ${id.expiresAt ?? "never"}.`,
+          `Token OK and saved to the macOS Keychain (account "${config.keychainAccount}"). ${id.scopes?.length ?? 0} scopes granted; expires ${id.expiresAt ?? "never"}.`,
         );
+        const writeScopes = (id.scopes ?? []).filter((sc) => /:(create|edit|delete|write)$/.test(sc));
+        if (writeScopes.length) {
+          console.log(
+            `Note: this token also has write scopes (${writeScopes.join(", ")}). For read-only use, create a token with only :read scopes.`,
+          );
+        }
         if (!process.stdin.isTTY) console.log("If you piped it from the clipboard, clear it with: pbcopy < /dev/null");
         return;
       }
       if (sub === "delete") {
-        console.log((await deleteToken(env)) ? "Token removed from the Keychain." : "No token found in the Keychain.");
+        const config = loadConfig();
+        console.log(
+          (await deleteToken(config))
+            ? `Token removed from the Keychain (account "${config.keychainAccount}").`
+            : `No token found in the Keychain under account "${config.keychainAccount}".`,
+        );
         return;
       }
       break;

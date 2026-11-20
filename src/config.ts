@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export type Environment = "production" | "sandbox";
 
@@ -17,7 +17,12 @@ export interface Config {
   signingKeyUid: string | undefined;
   signingKeyPath: string;
   auditLogPath: string | undefined;
-  downloadDir: string;
+  /** The only directory tools may write files into; undefined disables file-writing tools. */
+  downloadDir: string | undefined;
+  /** Optional name for this server entry (e.g. "personal", "business"); selects its own Keychain item. */
+  profile: string | undefined;
+  /** Keychain account name the token is stored under. */
+  keychainAccount: string;
   requestsPerSecond: number;
   defaultAccountUid: string | undefined;
 }
@@ -39,6 +44,28 @@ function flag(value: string | undefined): boolean {
 function expandHome(path: string): string {
   return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
+
+/**
+ * Profile and Keychain account names end up in a command written to
+ * `security -i`, so they are restricted to a safe character set.
+ */
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+function safeName(variable: string, value: string | undefined): string | undefined {
+  const v = value?.trim();
+  if (!v) return undefined;
+  if (!SAFE_NAME.test(v)) {
+    throw new Error(`${variable} may only contain letters, digits, ".", "_" and "-" (max 64), got "${v}"`);
+  }
+  return v;
+}
+
+/** Keychain account for a token: access-token-<environment>[-<profile>]. */
+export function defaultKeychainAccount(environment: Environment, profile?: string): string {
+  return profile ? `access-token-${environment}-${profile}` : `access-token-${environment}`;
+}
+
+const OFF = ["off", "false", "0", "none", "disabled"];
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const environment = (env.STARLING_ENVIRONMENT ?? "production").toLowerCase();
@@ -70,12 +97,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const audit = env.STARLING_AUDIT_LOG?.trim();
   const auditLogPath =
-    audit && ["off", "false", "0", "none"].includes(audit.toLowerCase())
-      ? undefined
-      : expandHome(audit || join(STATE_DIR, "audit.log"));
+    audit && OFF.includes(audit.toLowerCase()) ? undefined : expandHome(audit || join(STATE_DIR, "audit.log"));
 
   const requestsPerSecond = Number(env.STARLING_REQUESTS_PER_SECOND ?? 5);
   if (!(requestsPerSecond > 0)) throw new Error("STARLING_REQUESTS_PER_SECOND must be positive");
+
+  const profile = safeName("STARLING_PROFILE", env.STARLING_PROFILE);
+  const keychainAccount =
+    safeName("STARLING_KEYCHAIN_ACCOUNT", env.STARLING_KEYCHAIN_ACCOUNT) ??
+    defaultKeychainAccount(environment, profile);
+
+  // Downloads go to one directory only. Each profile gets its own subfolder by default,
+  // so personal and business files never mix. "off" disables every tool that writes files.
+  const download = env.STARLING_DOWNLOAD_DIR?.trim();
+  const downloadDir =
+    download && OFF.includes(download.toLowerCase())
+      ? undefined
+      : resolve(expandHome(download || join(homedir(), "Downloads", "starling-mcp", profile ?? "default")));
 
   return {
     environment,
@@ -86,7 +124,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     signingKeyUid: env.STARLING_SIGNING_KEY_UID?.trim() || undefined,
     signingKeyPath: expandHome(env.STARLING_SIGNING_KEY_PATH ?? join(CONFIG_DIR, "keys", "starling-api-private.key")),
     auditLogPath,
-    downloadDir: expandHome(env.STARLING_DOWNLOAD_DIR ?? join(homedir(), "Downloads", "starling")),
+    downloadDir,
+    profile,
+    keychainAccount,
     requestsPerSecond,
     defaultAccountUid: env.STARLING_DEFAULT_ACCOUNT_UID?.trim() || undefined,
   };

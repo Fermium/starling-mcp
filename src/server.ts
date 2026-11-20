@@ -3,7 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AccountResolver } from "./accounts.js";
 import { AuditLog } from "./audit.js";
 import { StarlingApiError, type StarlingClient } from "./client.js";
-import { type Config, tierAllows } from "./config.js";
+import { type AccessTier, type Config, tierAllows } from "./config.js";
 import { Confirmer } from "./confirm.js";
 import { ALL_TOOLS } from "./tools/index.js";
 import { confirmationCode } from "./tools/schemas.js";
@@ -13,7 +13,12 @@ export const VERSION = "0.1.0";
 
 function instructions(config: Config): string {
   return [
-    `Starling Bank (${config.environment}) for the account holder's own accounts. Access tier: ${config.tier}.`,
+    `Starling Bank (${config.environment}${config.profile ? `, profile "${config.profile}"` : ""}) for the account holder's own accounts. Access tier: ${config.tier}.`,
+    ...(config.profile
+      ? [
+          `This server entry only sees the Starling account(s) of the "${config.profile}" token. Other Starling profiles, if any, are separate MCP servers: label figures with the profile they came from and do not mix them up.`,
+        ]
+      : []),
     "Money is always in minor units (pence): 1050 = £10.50. Compact results also include formatted amounts.",
     "accountUid and categoryUid are optional on most tools and default to the primary account's main balance. A space or savings goal UID can be used as a categoryUid.",
     "Start with get_financial_overview for balances and spaces, list_transactions for activity, summarise_spending and find_recurring_payments for analysis.",
@@ -23,13 +28,24 @@ function instructions(config: Config): string {
   ].join("\n");
 }
 
+/** Whether a tool is registered under this configuration. */
+export function toolEnabled(config: Config, tool: { tier: AccessTier; writesFiles?: boolean }): boolean {
+  if (!tierAllows(config, tool.tier)) return false;
+  if (tool.writesFiles && !config.downloadDir) return false;
+  return true;
+}
+
 function errorResult(message: string): CallToolResult {
   return { isError: true, content: [{ type: "text", text: message }] };
 }
 
 export function createServer(config: Config, client: StarlingClient): McpServer {
   const server = new McpServer(
-    { name: "starling", version: VERSION, title: "Starling Bank" },
+    {
+      name: config.profile ? `starling-${config.profile}` : "starling",
+      version: VERSION,
+      title: config.profile ? `Starling Bank (${config.profile})` : "Starling Bank",
+    },
     { instructions: instructions(config) },
   );
   const ctx: ToolContext = {
@@ -42,7 +58,7 @@ export function createServer(config: Config, client: StarlingClient): McpServer 
   };
 
   for (const tool of ALL_TOOLS) {
-    if (!tierAllows(config, tool.tier)) continue;
+    if (!toolEnabled(config, tool)) continue;
     const inputSchema = tool.confirm ? { ...tool.input, confirmationCode } : tool.input;
     server.registerTool(
       tool.name,
@@ -89,5 +105,5 @@ export function createServer(config: Config, client: StarlingClient): McpServer 
 }
 
 export function registeredToolCount(config: Config): number {
-  return ALL_TOOLS.filter((t) => tierAllows(config, t.tier)).length;
+  return ALL_TOOLS.filter((t) => toolEnabled(config, t)).length;
 }

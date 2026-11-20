@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { mkdir, open, readFile, stat } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 const UPLOAD_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -55,21 +55,95 @@ export function extensionFor(contentType: string): string {
   return EXTENSION_FOR_TYPE[contentType] ?? ".bin";
 }
 
+const MAX_NAME_BYTES = 255;
+
+/** Thrown when a requested file name or path is not allowed. */
+export class UnsafePathError extends Error {}
+
 /**
- * Writes downloaded bank data with owner-only permissions and never
- * overwrites an existing file. Relative paths resolve inside downloadDir.
+ * Returns the name unchanged if it is a single, plain file name:
+ * no directory separators, no "." / "..", no control characters, not hidden.
  */
-export async function saveDownload(downloadDir: string, fileName: string, data: Buffer | string): Promise<string> {
-  const target = isAbsolute(expand(fileName)) ? expand(fileName) : join(downloadDir, fileName);
-  const dir = resolve(target, "..");
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+export function plainFileName(name: string): string | undefined {
+  if (!name || name === "." || name === "..") return undefined;
+  if (name.includes("/") || name.includes("\\")) return undefined;
+  for (const ch of name) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return undefined;
+  }
+  if (name.startsWith(".") || name.startsWith("~")) return undefined;
+  if (name.trim() !== name || Buffer.byteLength(name) > MAX_NAME_BYTES) return undefined;
+  return name;
+}
+
+/**
+ * Picks the file name for something the Starling API sent us. Names supplied
+ * by the server (e.g. Content-Disposition) are only used if they are a plain
+ * file name; anything else falls back to the given safe name.
+ */
+export function serverFileName(suggested: string | undefined, fallback: string): string {
+  return (suggested !== undefined && plainFileName(suggested)) || fallback;
+}
+
+/**
+ * Resolves where a requested name may be written, or throws. Only plain
+ * file names, or absolute / ~ paths whose directory IS the download
+ * directory, are accepted: no subdirectories, no "..", no other locations.
+ */
+async function targetIn(realDir: string, requested: string): Promise<string> {
+  const expanded = expand(requested);
+  if (isAbsolute(expanded)) {
+    const name = plainFileName(basename(expanded));
+    let parent: string | undefined;
+    try {
+      parent = await realpath(dirname(expanded));
+    } catch {
+      parent = undefined;
+    }
+    if (!name || parent !== realDir) {
+      throw new UnsafePathError(
+        `Refusing to write to ${requested}: files can only be saved directly in the download directory (${realDir}).`,
+      );
+    }
+    return join(realDir, name);
+  }
+  const name = plainFileName(requested);
+  if (!name) {
+    throw new UnsafePathError(
+      `Refusing file name "${requested}": use a plain file name (no "/", "\\", ".." or leading "."). ` +
+        `It is saved in ${realDir}.`,
+    );
+  }
+  return join(realDir, name);
+}
+
+/**
+ * Writes downloaded bank data into the download directory only, with
+ * owner-only permissions, never overwriting or following a symlink at the
+ * target (O_CREAT | O_EXCL | O_NOFOLLOW). If the name is taken, " (1)",
+ * " (2)", ... is added.
+ */
+export async function saveDownload(
+  downloadDir: string | undefined,
+  fileName: string,
+  data: Buffer | string,
+): Promise<string> {
+  if (!downloadDir) {
+    throw new UnsafePathError(
+      "Saving files is disabled (STARLING_DOWNLOAD_DIR=off). Set STARLING_DOWNLOAD_DIR to a directory to enable it.",
+    );
+  }
+  await mkdir(downloadDir, { recursive: true, mode: 0o700 });
+  const realDir = await realpath(downloadDir);
+  const target = await targetIn(realDir, fileName);
 
   const ext = extname(target);
   const stem = target.slice(0, target.length - ext.length);
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
   for (let n = 0; n < 1000; n++) {
     const candidate = n === 0 ? target : `${stem} (${n})${ext}`;
     try {
-      const handle = await open(candidate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+      const handle = await open(candidate, flags, 0o600);
       try {
         await handle.writeFile(data);
       } finally {

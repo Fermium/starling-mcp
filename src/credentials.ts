@@ -1,14 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { type Environment, KEYCHAIN_SERVICE } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 const SECURITY = "/usr/bin/security";
-
-export function keychainAccount(environment: Environment): string {
-  return `access-token-${environment}`;
-}
+/** Same rule as config.ts: these names are written into a `security -i` command line. */
+const SAFE_ACCOUNT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 
 /**
  * Refuses secret files that other users can read. A personal access token
@@ -23,7 +23,14 @@ export function assertPrivateFile(path: string): void {
   }
 }
 
-async function readKeychain(environment: Environment): Promise<string | undefined> {
+/** Where to find the token: the Keychain account this server entry uses. */
+export interface TokenLocation {
+  environment: Environment;
+  keychainAccount: string;
+  profile?: string;
+}
+
+export async function readKeychain(account: string): Promise<string | undefined> {
   if (process.platform !== "darwin") return undefined;
   try {
     const { stdout } = await execFileAsync(SECURITY, [
@@ -31,7 +38,7 @@ async function readKeychain(environment: Environment): Promise<string | undefine
       "-s",
       KEYCHAIN_SERVICE,
       "-a",
-      keychainAccount(environment),
+      account,
       "-w",
     ]);
     const token = stdout.trim();
@@ -41,30 +48,45 @@ async function readKeychain(environment: Environment): Promise<string | undefine
   }
 }
 
-export type TokenSource = "keychain" | "file" | "environment";
+export type TokenSource = "file" | "environment" | "keychain";
 
 /**
- * Resolves the access token, in order of preference:
- * the macOS Keychain, then STARLING_ACCESS_TOKEN_FILE, then STARLING_ACCESS_TOKEN.
+ * Resolves the access token. Explicit settings win over the Keychain, so a
+ * token file or variable set for one server entry is never silently replaced
+ * by a Keychain item:
+ *
+ * 1. STARLING_ACCESS_TOKEN_FILE. If set, it must work: a missing, empty or
+ *    group/world-readable file is an error, never a fallthrough.
+ * 2. STARLING_ACCESS_TOKEN.
+ * 3. The macOS Keychain item for this entry (service "starling-mcp",
+ *    account "access-token-<env>[-<profile>]"). A profile never falls back
+ *    to the unprofiled item.
  */
 export async function loadAccessToken(
-  environment: Environment,
+  where: TokenLocation,
   env: NodeJS.ProcessEnv = process.env,
+  keychain: (account: string) => Promise<string | undefined> = readKeychain,
 ): Promise<{ token: string; source: TokenSource }> {
-  const fromKeychain = await readKeychain(environment);
-  if (fromKeychain) return { token: fromKeychain, source: "keychain" };
-
-  if (env.STARLING_ACCESS_TOKEN_FILE) {
-    assertPrivateFile(env.STARLING_ACCESS_TOKEN_FILE);
-    const token = readFileSync(env.STARLING_ACCESS_TOKEN_FILE, "utf8").trim();
-    if (token) return { token, source: "file" };
+  const file = env.STARLING_ACCESS_TOKEN_FILE?.trim();
+  if (file) {
+    const path = file.startsWith("~/") ? join(homedir(), file.slice(2)) : file;
+    assertPrivateFile(path);
+    const token = readFileSync(path, "utf8").trim();
+    if (!token) throw new Error(`STARLING_ACCESS_TOKEN_FILE (${path}) is empty.`);
+    return { token, source: "file" };
   }
 
   const fromEnv = env.STARLING_ACCESS_TOKEN?.trim();
   if (fromEnv) return { token: fromEnv, source: "environment" };
 
+  const fromKeychain = await keychain(where.keychainAccount);
+  if (fromKeychain) return { token: fromKeychain, source: "keychain" };
+
+  const flags = `${where.environment === "sandbox" ? " --sandbox" : ""}${where.profile ? ` --profile ${where.profile}` : ""}`;
   throw new Error(
-    `No Starling access token found for ${environment}. Run "starling-mcp token set" to store one in the macOS Keychain.`,
+    `No Starling access token found for ${where.environment}${where.profile ? ` (profile "${where.profile}")` : ""}. ` +
+      `Run "starling-mcp token set${flags}" to store one in the macOS Keychain (Keychain account "${where.keychainAccount}"), ` +
+      "or set STARLING_ACCESS_TOKEN_FILE to a chmod 600 file.",
   );
 }
 
@@ -119,7 +141,10 @@ export function readHidden(prompt: string): Promise<string> {
  * pipe (interactive mode), never as a command-line argument, so it cannot be
  * seen in process listings or shell history.
  */
-export function storeToken(environment: Environment, token: string): Promise<void> {
+export function storeToken(where: TokenLocation, token: string): Promise<void> {
+  if (!SAFE_ACCOUNT.test(where.keychainAccount)) {
+    return Promise.reject(new Error(`Unsafe Keychain account name: ${where.keychainAccount}`));
+  }
   if (!/^[A-Za-z0-9._~+/=-]+$/.test(token)) {
     return Promise.reject(new Error("That does not look like a Starling access token (unexpected characters)."));
   }
@@ -135,22 +160,16 @@ export function storeToken(environment: Environment, token: string): Promise<voi
         ? resolve()
         : reject(new Error(`Could not save to the Keychain: ${stderr.trim() || `security exited with code ${code}`}`)),
     );
-    const label = `Starling MCP personal access token (${environment})`;
+    const label = `Starling MCP personal access token (${where.environment}${where.profile ? `, ${where.profile}` : ""})`;
     child.stdin.end(
-      `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${keychainAccount(environment)} -l "${label}" -w "${token}"\n`,
+      `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${where.keychainAccount} -l "${label}" -w "${token}"\n`,
     );
   });
 }
 
-export async function deleteToken(environment: Environment): Promise<boolean> {
+export async function deleteToken(where: TokenLocation): Promise<boolean> {
   try {
-    await execFileAsync(SECURITY, [
-      "delete-generic-password",
-      "-s",
-      KEYCHAIN_SERVICE,
-      "-a",
-      keychainAccount(environment),
-    ]);
+    await execFileAsync(SECURITY, ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", where.keychainAccount]);
     return true;
   } catch {
     return false;
